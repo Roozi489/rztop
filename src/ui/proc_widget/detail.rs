@@ -598,6 +598,7 @@ mod tests {
             core_count: 4,
             proc_mem_bytes: true,
             total_mem: 1024 * 1024 * 1024,
+            total_vram: 1024 * 1024 * 1024,
             proc_colors: true,
             base_10: false,
         }

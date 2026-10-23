@@ -1,6 +1,7 @@
 mod borders;
 mod detail;
 mod layout;
+mod rankings;
 mod rows;
 
 use crate::collect::CollectStatus;
@@ -37,6 +38,7 @@ pub struct ProcFrame {
     pub core_count: usize,
     pub proc_mem_bytes: bool,
     pub total_mem: u64,
+    pub total_vram: u64,
     pub proc_colors: bool,
     pub base_10: bool,
 }
@@ -438,9 +440,25 @@ impl super::Widget for ProcWidget {
             core_count: params.core_count,
             proc_mem_bytes: params.config.proc.proc_mem_bytes,
             total_mem: params.total_mem,
+            total_vram: params.gpu.map_or(0, |s| {
+                s.devices
+                    .iter()
+                    .fold(0u64, |sum, d| sum.saturating_add(d.mem_total))
+            }),
             proc_colors: params.config.proc.proc_colors,
             base_10: params.config.ui.base_10_sizes,
         };
+        if params.config.proc.proc_rankings {
+            output.push_str(&rankings::draw(
+                procs,
+                &area,
+                params.theme,
+                &frame,
+                &view,
+                &proc_snap.status,
+            ));
+            return;
+        }
         output.push_str(&draw(
             procs,
             entries,
@@ -469,7 +487,7 @@ mod tests {
     use super::*;
     use crate::domain::process::{PriorityClass, ProcState};
 
-    fn strip_ansi(s: &str) -> String {
+    pub(super) fn strip_ansi(s: &str) -> String {
         let mut result = String::with_capacity(s.len());
         let mut in_escape = false;
         for ch in s.chars() {
@@ -590,7 +608,7 @@ mod tests {
         }
     }
 
-    fn make_view() -> ProcView<'static> {
+    pub(super) fn make_view() -> ProcView<'static> {
         static EMPTY: std::sync::OnceLock<std::collections::HashSet<u32>> =
             std::sync::OnceLock::new();
         ProcView {
@@ -611,12 +629,13 @@ mod tests {
         }
     }
 
-    fn make_frame() -> ProcFrame {
+    pub(super) fn make_frame() -> ProcFrame {
         ProcFrame {
             proc_per_core: true,
             core_count: 4,
             proc_mem_bytes: true,
             total_mem: 1024 * 1024 * 1024,
+            total_vram: 1024 * 1024 * 1024,
             proc_colors: true,
             base_10: false,
         }
@@ -856,6 +875,7 @@ mod tests {
             &ProcFrame {
                 proc_mem_bytes: false,
                 total_mem: 1024 * 1024 * 1024,
+                total_vram: 1024 * 1024 * 1024,
                 ..make_frame()
             },
             &make_view(),

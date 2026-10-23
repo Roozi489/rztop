@@ -13,6 +13,32 @@ use crate::domain::widget_kind::WidgetKind;
 use tracing_subscriber::filter::LevelFilter;
 
 #[test]
+fn legacy_process_view_alias_loads_and_saves_under_new_name() {
+    for enabled in [true, false] {
+        let config: Config = toml::from_str(&format!("proc_dual_view = {enabled}")).unwrap();
+        assert_eq!(config.proc.proc_rankings, enabled);
+        let saved = toml::to_string(&config).unwrap();
+        assert!(saved.contains(&format!("proc_rankings = {enabled}")));
+        assert!(!saved.contains("proc_dual_view"));
+        let restored: Config = toml::from_str(&saved).unwrap();
+        assert_eq!(restored.proc.proc_rankings, enabled);
+    }
+}
+
+#[test]
+fn four_process_panels_default_on_but_respect_saved_choice() {
+    assert!(Config::new().proc.proc_rankings);
+    let fresh: Config = toml::from_str("").unwrap();
+    assert!(fresh.proc.proc_rankings);
+    let older: Config = toml::from_str("update_ms = 1000").unwrap();
+    assert!(older.proc.proc_rankings);
+    let single: Config = toml::from_str("proc_rankings = false").unwrap();
+    assert!(!single.proc.proc_rankings);
+    let four: Config = toml::from_str("proc_rankings = true").unwrap();
+    assert!(four.proc.proc_rankings);
+}
+
+#[test]
 fn load_empty_file_uses_defaults() {
     let mut config = Config::new();
     let tmp = std::env::temp_dir().join("rtop_test_empty.toml");

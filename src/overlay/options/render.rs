@@ -219,6 +219,7 @@ pub const PROC: &[ConfigKey] = &[
     ConfigKey::Bool(BoolKey::ProcReversed),
     ConfigKey::Bool(BoolKey::ProcTree),
     ConfigKey::Bool(BoolKey::ProcAggregate),
+    ConfigKey::Bool(BoolKey::ProcRankings),
     ConfigKey::Bool(BoolKey::ProcColors),
     ConfigKey::Bool(BoolKey::ProcPerCore),
     ConfigKey::Bool(BoolKey::ProcMemBytes),
@@ -365,6 +366,9 @@ pub(crate) fn render_edit_value(buffer: &str, cursor: usize, width: usize) -> St
 
 /// Capitalize first letter of each word, replace underscores with spaces.
 fn capitalize_option(key: ConfigKey) -> String {
+    if key == ConfigKey::Bool(BoolKey::ProcRankings) {
+        return "Process rankings".into();
+    }
     key.name()
         .replace('_', " ")
         .split(' ')

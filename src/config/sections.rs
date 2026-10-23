@@ -267,6 +267,9 @@ impl Default for NetConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProcConfig {
+    /// Compact CPU, commit size, GPU usage and VRAM rankings.
+    #[serde(alias = "proc_dual_view")]
+    pub proc_rankings: bool,
     pub proc_aggregate: bool,
     pub proc_colors: bool,
     pub proc_mem_bytes: bool,
@@ -275,6 +278,7 @@ pub struct ProcConfig {
 impl Default for ProcConfig {
     fn default() -> Self {
         Self {
+            proc_rankings: true,
             proc_aggregate: false,
             proc_colors: true,
             proc_mem_bytes: true,

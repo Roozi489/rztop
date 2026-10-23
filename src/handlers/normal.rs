@@ -236,6 +236,9 @@ fn cycle_sort(ctx: &mut InputContext, dir: isize) {
 }
 
 pub(super) fn terminate_action(ctx: &mut InputContext, _: &Key) {
+    if ctx.config.proc.proc_rankings {
+        return;
+    }
     if let Some((armed_pid, _, false)) = ctx.process.armed_terminate {
         // Defensive: the armed PID may have died during the arm
         // window (live update arrived between the two `t` presses).
@@ -281,6 +284,9 @@ pub(super) fn terminate_action(ctx: &mut InputContext, _: &Key) {
 }
 
 pub(super) fn kill_action(ctx: &mut InputContext, _: &Key) {
+    if ctx.config.proc.proc_rankings {
+        return;
+    }
     if let Some((armed_pid, _, true)) = ctx.process.armed_terminate {
         if ctx.process.is_dead(armed_pid) {
             tracing::debug!(
@@ -334,6 +340,9 @@ pub(super) fn pause_action(ctx: &mut InputContext, _: &Key) {
 }
 
 pub(super) fn follow_action(ctx: &mut InputContext, _: &Key) {
+    if ctx.config.proc.proc_rankings {
+        return;
+    }
     if ctx.process.selected < ctx.process.entries.len()
         && let Some(pid) = ctx.selected_proc_pid()
     {
@@ -347,6 +356,9 @@ pub(super) fn follow_action(ctx: &mut InputContext, _: &Key) {
 }
 
 pub(super) fn detail_action(ctx: &mut InputContext, _: &Key) {
+    if ctx.config.proc.proc_rankings {
+        return;
+    }
     if ctx.process.selected >= ctx.process.entries.len() {
         return;
     }

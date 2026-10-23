@@ -17,6 +17,14 @@ use crate::config::{BoolKey, ConfigKey, EnumKey, IntKey, StringKey};
 /// in the right-hand panel of the options menu.
 pub fn desc(key: ConfigKey) -> &'static [&'static str] {
     match key {
+        ConfigKey::Bool(BoolKey::ProcRankings) => &[
+            "CPU, commit, GPU and VRAM rankings.",
+            "Four compact lists stacked vertically.",
+            "Highest usage first. Filter and pause apply",
+            "to all lists. Selection and process actions",
+            "are disabled in this monitoring view.",
+            "Default: on (four panels).",
+        ],
         ConfigKey::Bool(BoolKey::ThemeBackground) => &[
             "Render the theme background.",
             "",
@@ -601,6 +609,7 @@ mod tests {
         "proc_reversed",
         "proc_tree",
         "proc_colors",
+        "proc_rankings",
         "proc_per_core",
         "proc_mem_bytes",
         "proc_aggregate",

@@ -206,6 +206,25 @@ is collected separately. GPU usage is the busiest engine for each process across
 GPUs; dedicated GPU memory is summed across adapters. Unavailable GPU counters
 are reported as N/A.
 
+### Process rankings
+
+**Process rankings** in the Process options menu (`proc_rankings = true`) is
+enabled by default in this custom build. It displays four vertically stacked
+rankings: CPU, Memory, GPU, and VRAM. Memory remains sorted by Commit.
+The CPU and Memory panels show Program, CPU%, RAM, and Commit; the GPU panels
+show Program, GPU%, and VRAM. PID and command line are omitted.
+
+The primary columns use the CPU usage gradient; Memory highlights both RAM and
+Commit. CPU/GPU colors follow utilization percentages, Commit/RAM use percentages
+of system RAM, and VRAM uses total detected GPU memory. Secondary values remain
+muted and headers use the theme title color. The Process colors option disables
+gradients.
+
+The rankings share filtering (`f` / `/`) and pause (`Space`). This is a read-only
+monitoring view; turn it off to select, inspect, follow, or terminate processes.
+Settings are per-user, so copying an executable does not transfer them. Existing
+`proc_dual_view` settings remain accepted; saving writes `proc_rankings`.
+
 ### Per-Widget Update Intervals
 
 By default all widgets share the global `update_ms` interval (default 2000ms). Each widget can override this with its own interval:
