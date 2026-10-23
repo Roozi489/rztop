@@ -44,14 +44,14 @@ pub(super) fn stats_row_count(has_temp: bool, has_watts: bool) -> usize {
 /// hints, in rows (including borders). The layout engine clamps this
 /// to `[MIN_CPU_HEIGHT, term_height/3]` when placing the widget.
 ///
-/// Formula: `core_rows + stats_rows + 2 (load detail row + section
+/// Formula: `core_rows + stats_rows + 1 (section
 /// divider) + 2 (top + bottom borders)`. The widget owns this
 /// formula so the layout engine no longer needs to know about
 /// `core_grid_shape` or `stats_row_count`.
 pub fn preferred_height(hints: &crate::draw::layout::LayoutHints) -> usize {
     let (core_rows, _) = core_grid_shape(hints.core_count);
     let stats_rows = stats_row_count(hints.has_cpu_temp, hints.has_cpu_watts);
-    let panel_overhead = stats_rows + 2; // load detail row + section divider
+    let panel_overhead = stats_rows + 1; // section divider
     core_rows + panel_overhead + 2 // + top/bottom borders
 }
 

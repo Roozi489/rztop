@@ -225,6 +225,12 @@ monitoring view; turn it off to select, inspect, follow, or terminate processes.
 Settings are per-user, so copying an executable does not transfer them. Existing
 `proc_dual_view` settings remain accepted; saving writes `proc_rankings`.
 
+### CPU power display
+
+With `show_cpu_watts = true`, Watts appears directly below Load. The separate
+1/5/15-minute load-detail row is omitted. Watts remains visible as N/A when the
+sensor is unavailable; supported sensors may require administrator privileges.
+
 ### Per-Widget Update Intervals
 
 By default all widgets share the global `update_ms` interval (default 2000ms). Each widget can override this with its own interval:

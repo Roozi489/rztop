@@ -101,10 +101,10 @@ pub fn draw(
 
     let has_temp = settings.check_temp && !cpu.temp.is_empty();
     let show_coretemp_flag = has_temp && settings.show_coretemp;
-    let has_watts = settings.show_cpu_watts && settings.cpu_watts.is_some();
+    let has_watts = settings.show_cpu_watts;
     let stats_rows = stats_row_count(has_temp, has_watts);
-    // +2 for the load detail row and section divider.
-    let panel_content_overhead = stats_rows + 2;
+    // +1 for the section divider.
+    let panel_content_overhead = stats_rows + 1;
 
     // Half-and-half budget: the core panel gets up to `inner_usable
     // / 2` so the main graph keeps roughly the other half. Within
@@ -653,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_contains_load_detail_row() {
+    fn draw_omits_load_detail_row() {
         let output = draw(
             &make_cpu_info(),
             &make_area(),
@@ -663,7 +663,10 @@ mod tests {
         );
         let plain = strip_ansi(&output);
         assert!(plain.contains("0.84"), "should contain 1-min load: {plain}");
-        assert!(plain.contains("0.38"), "should contain 5-min load: {plain}");
+        assert!(!plain.contains("0.38"), "should omit 5-min load: {plain}");
+        for label in ["1m:", "5m:", "15m:"] {
+            assert!(!plain.contains(label));
+        }
     }
 
     #[test]
@@ -694,6 +697,32 @@ mod tests {
             output.contains(&expected_load),
             "Load stats value should be GRAD_CPU_UPPER[84] followed by '      0.84'"
         );
+    }
+
+    #[test]
+    fn watts_row_follows_load_and_remains_visible_without_sensor() {
+        let mut settings = make_frame();
+        settings.show_cpu_watts = true;
+        let output = draw(
+            &make_cpu_info(),
+            &make_area(),
+            &Theme::default(),
+            &settings,
+            &CollectStatus::Ok,
+        );
+        assert!(output.find("Load  ").unwrap() < output.find("Watts ").unwrap());
+        assert!(output.contains("N/A"));
+        settings.cpu_watts = Some(42.5);
+        let output = draw(
+            &make_cpu_info(),
+            &make_area(),
+            &Theme::default(),
+            &settings,
+            &CollectStatus::Ok,
+        );
+        assert!(output.find("Load  ").unwrap() < output.find("Watts ").unwrap());
+        assert!(output.contains("42.5 W"));
+        assert!(!output.contains("N/A"));
     }
 
     #[test]

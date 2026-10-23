@@ -2,7 +2,7 @@
 //!
 //! Owns the layout + render logic for the right-hand panel inside
 //! the CPU widget: the stats meter rows (CPU / Temp / Watts /
-//! Load), the load-average detail row, the section divider, and
+//! Load), the section divider, and
 //! the per-core mini-graphs grouped in columns.
 
 use crate::domain::config_enums::TempScale;
@@ -97,6 +97,21 @@ pub(super) fn draw_core_panel(
         row += 1;
     }
 
+    {
+        let load1 = cpu.load_avg[0];
+        // load_avg is a 0.0–1.0 fraction of total CPU capacity
+        let load_pct = (load1 * 100.0).clamp(0.0, 100.0) as i32;
+        let load_meter = Meter::new(meter_w, cpu_gradient, meter_bg);
+        let load_val = format!("{:.2}", load1);
+        buf.mv(content_x, panel.y + 1 + row)
+            .color(fg)
+            .text("Load  ")
+            .text(load_meter.render(load_pct))
+            .color(gradient_color(cpu_gradient, load_pct))
+            .text(&tools::rjust(&load_val, STATS_VAL_W, true));
+        row += 1;
+    }
+
     if params.has_watts
         && let Some(watts) = params.cpu_watts
     {
@@ -132,38 +147,13 @@ pub(super) fn draw_core_panel(
         row += 1;
     }
 
-    {
-        let load1 = cpu.load_avg[0];
-        // load_avg is a 0.0–1.0 fraction of total CPU capacity
-        let load_pct = (load1 * 100.0).clamp(0.0, 100.0) as i32;
-        let load_meter = Meter::new(meter_w, cpu_gradient, meter_bg);
-        let load_val = format!("{:.2}", load1);
+    if params.has_watts && params.cpu_watts.is_none() {
         buf.mv(content_x, panel.y + 1 + row)
             .color(fg)
-            .text("Load  ")
-            .text(load_meter.render(load_pct))
-            .color(gradient_color(cpu_gradient, load_pct))
-            .text(&tools::rjust(&load_val, STATS_VAL_W, true));
-        row += 1;
-    }
-
-    {
-        let lavg_text = if panel_inner_w >= 30 {
-            format!(
-                "1m: {:.2}  5m: {:.2}  15m: {:.2}",
-                cpu.load_avg[0], cpu.load_avg[1], cpu.load_avg[2]
-            )
-        } else {
-            format!(
-                "{:.2}  {:.2}  {:.2}",
-                cpu.load_avg[0], cpu.load_avg[1], cpu.load_avg[2]
-            )
-        };
-        let lavg_vis = tools::ulen(&lavg_text);
-        if lavg_vis <= panel_inner_w {
-            let lavg_x = content_x + (panel_inner_w.saturating_sub(lavg_vis)) / 2;
-            buf.mv(lavg_x, panel.y + 1 + row).color(fg).text(&lavg_text);
-        }
+            .text("Watts ")
+            .text(&" ".repeat(meter_w))
+            .color(theme.color(tc::INACTIVE_FG))
+            .text(&tools::rjust("N/A", STATS_VAL_W, true));
         row += 1;
     }
 
@@ -214,7 +204,7 @@ pub(super) fn draw_core_panel(
         buf.mv(panel.x + 1, divider_y).text(&divider);
     }
 
-    let core_start_y = panel.y + 1 + params.stats_rows + 2; // stats + load detail + divider
+    let core_start_y = panel.y + 1 + params.stats_rows + 1; // stats + divider
 
     for (i, core_data) in cpu.core_percent.iter().enumerate() {
         let col = i / grid.rows;
