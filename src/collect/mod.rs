@@ -8,6 +8,7 @@ pub mod network;
 pub(crate) mod pawnio;
 pub mod process;
 pub mod process_display;
+mod process_gpu;
 pub mod statusbar;
 pub(crate) mod win;
 

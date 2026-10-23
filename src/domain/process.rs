@@ -13,8 +13,12 @@ pub struct ProcInfo {
     pub threads: usize,
     /// Username of the process owner.
     pub user: String,
-    /// Memory usage in bytes (working set).
+    /// Private committed memory in bytes (Windows Commit size).
     pub mem: u64,
+    /// Resident physical memory (working set), in bytes.
+    pub ram: u64,
+    pub gpu_p: Option<f64>,
+    pub gpu_mem: Option<u64>,
     /// Current CPU usage percentage (may exceed 100% if per-core).
     pub cpu_p: f64,
     /// Current process state.
@@ -40,6 +44,9 @@ impl Default for ProcInfo {
             threads: 0,
             user: String::new(),
             mem: 0,
+            ram: 0,
+            gpu_p: None,
+            gpu_mem: None,
             cpu_p: 0.0,
             state: ProcState::Unknown,
             priority: PriorityClass::Normal,

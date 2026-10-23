@@ -15,6 +15,14 @@ struct PdhVal {
 #[link(name = "pdh")]
 unsafe extern "system" {
     fn PdhOpenQueryW(ds: *const u16, ud: usize, q: *mut isize) -> i32;
+    fn PdhAddEnglishCounterW(q: isize, p: *const u16, ud: usize, c: *mut isize) -> i32;
+    fn PdhGetFormattedCounterArrayW(
+        c: isize,
+        f: u32,
+        size: *mut u32,
+        count: *mut u32,
+        items: *mut PdhItem,
+    ) -> u32;
     fn PdhAddCounterW(q: isize, p: *const u16, ud: usize, c: *mut isize) -> i32;
     fn PdhCollectQueryData(q: isize) -> i32;
     fn PdhGetFormattedCounterValue(c: isize, f: u32, ct: *mut u32, v: *mut PdhVal) -> i32;
@@ -131,6 +139,14 @@ impl PdhQuery {
         }
     }
 
+    pub(crate) fn add_english(&self, path: &str) -> Option<PdhCounter> {
+        let path: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        let mut raw = 0;
+        // SAFETY: live query, nul-terminated path and writable counter handle.
+        (unsafe { PdhAddEnglishCounterW(self.raw, path.as_ptr(), 0, &mut raw) } == 0)
+            .then_some(PdhCounter { raw })
+    }
+
     pub(crate) fn collect(&self) -> Result<(), i32> {
         // SAFETY: self.raw is an open PDH query owned by this PdhQuery.
         let status = unsafe { PdhCollectQueryData(self.raw) };
@@ -156,7 +172,60 @@ pub(crate) struct PdhCounter {
     raw: isize,
 }
 
+#[repr(C)]
+struct PdhItem {
+    name: *const u16,
+    value: PdhVal,
+}
+
 impl PdhCounter {
+    pub(crate) fn array(self) -> Option<Vec<(String, f64)>> {
+        let mut bytes = 0;
+        let mut count = 0;
+        // SAFETY: sizing call uses null output; subsequent buffer is aligned and sized as requested.
+        unsafe {
+            let status = PdhGetFormattedCounterArrayW(
+                self.raw,
+                PDH_FMT_DOUBLE,
+                &mut bytes,
+                &mut count,
+                std::ptr::null_mut(),
+            );
+            if status != 0x800007d2 || bytes == 0 || bytes > 16 * 1024 * 1024 {
+                return None;
+            }
+            let mut buf = vec![0u64; (bytes as usize).div_ceil(8)];
+            if PdhGetFormattedCounterArrayW(
+                self.raw,
+                PDH_FMT_DOUBLE,
+                &mut bytes,
+                &mut count,
+                buf.as_mut_ptr().cast(),
+            ) != 0
+            {
+                return None;
+            }
+            if count as usize > buf.len() * 8 / std::mem::size_of::<PdhItem>() {
+                return None;
+            }
+            let items = std::slice::from_raw_parts(buf.as_ptr().cast::<PdhItem>(), count as usize);
+            Some(
+                items
+                    .iter()
+                    .filter(|i| {
+                        i.value.status <= 1 && i.value.value.is_finite() && !i.name.is_null()
+                    })
+                    .map(|i| {
+                        let name = windows::core::PCWSTR(i.name)
+                            .to_string()
+                            .unwrap_or_default();
+                        (name, i.value.value)
+                    })
+                    .collect(),
+            )
+        }
+    }
+
     pub(crate) fn is_valid(self) -> bool {
         self.raw != 0
     }

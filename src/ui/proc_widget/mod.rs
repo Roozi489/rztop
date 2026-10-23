@@ -504,6 +504,9 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                ram: 0,
+                gpu_p: None,
+                gpu_mem: None,
             },
             ProcInfo {
                 pid: 200,
@@ -519,6 +522,9 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                ram: 0,
+                gpu_p: None,
+                gpu_mem: None,
             },
             ProcInfo {
                 pid: 300,
@@ -534,6 +540,9 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                ram: 0,
+                gpu_p: None,
+                gpu_mem: None,
             },
         ]
     }
@@ -564,6 +573,9 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                ram: 0,
+                gpu_p: None,
+                gpu_mem: None,
             })
             .collect()
     }

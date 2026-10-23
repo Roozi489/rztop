@@ -100,6 +100,7 @@ pub struct ProcCollector {
     prev_times: HashMap<u32, u64>,
     last_collect: std::time::Instant,
     core_count: usize,
+    gpu: super::process_gpu::ProcessGpu,
 }
 
 impl ProcCollector {
@@ -110,6 +111,7 @@ impl ProcCollector {
             prev_times: HashMap::new(),
             last_collect: std::time::Instant::now(),
             core_count: 1,
+            gpu: super::process_gpu::ProcessGpu::default(),
         }
     }
 
@@ -197,7 +199,10 @@ impl ProcCollector {
                         threads,
                         user: details.user,
                         mem: details.mem,
+                        ram: details.ram,
                         cpu_p: details.cpu_p,
+                        gpu_p: None,
+                        gpu_mem: None,
                         state: if suspended.contains(&pid) {
                             ProcState::Suspended
                         } else {
@@ -223,6 +228,7 @@ impl ProcCollector {
             self.prev_times.insert(p.pid, p.cpu_time);
         }
 
+        self.gpu.update(&mut new_procs);
         self.procs = new_procs;
     }
 }
@@ -383,6 +389,7 @@ struct ProcessDetails {
     cpu_p: f64,
     cpu_time: u64,
     mem: u64,
+    ram: u64,
     priority: PriorityClass,
     user: String,
     cmd: String,
@@ -400,6 +407,7 @@ impl Default for ProcessDetails {
             cpu_p: 0.0,
             cpu_time: 0,
             mem: 0,
+            ram: 0,
             priority: PriorityClass::Normal,
             user: String::new(),
             cmd: String::new(),
@@ -454,12 +462,19 @@ fn get_process_details(
             }
 
             use windows::Win32::System::ProcessStatus::*;
-            let mut mem_counters = PROCESS_MEMORY_COUNTERS {
-                cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            let mut mem_counters = PROCESS_MEMORY_COUNTERS_EX {
+                cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
                 ..Default::default()
             };
-            if GetProcessMemoryInfo(handle.get(), &mut mem_counters, mem_counters.cb).is_ok() {
-                details.mem = mem_counters.WorkingSetSize as u64;
+            if GetProcessMemoryInfo(
+                handle.get(),
+                (&mut mem_counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
+                mem_counters.cb,
+            )
+            .is_ok()
+            {
+                details.mem = mem_counters.PrivateUsage as u64;
+                details.ram = mem_counters.WorkingSetSize as u64;
             }
 
             // Cumulative I/O totals. Protected processes deny this even

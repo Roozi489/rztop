@@ -199,6 +199,13 @@ rtop ships with 41 built-in themes. Change the theme from the options menu (Gene
 color_theme = "dracula"
 ```
 
+### Per-process memory and GPU counters
+
+Process memory uses Windows private committed bytes. Resident RAM (working set)
+is collected separately. GPU usage is the busiest engine for each process across
+GPUs; dedicated GPU memory is summed across adapters. Unavailable GPU counters
+are reported as N/A.
+
 ### Per-Widget Update Intervals
 
 By default all widgets share the global `update_ms` interval (default 2000ms). Each widget can override this with its own interval:
