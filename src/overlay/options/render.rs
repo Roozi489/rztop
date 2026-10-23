@@ -236,7 +236,10 @@ pub const PROC: &[ConfigKey] = &[
 /// hosts the single shared interval; per-device labels are not
 /// configurable (the widget renders the auto-detected vendor name
 /// from the live snapshot).
-pub const GPU: &[ConfigKey] = &[ConfigKey::Int(IntKey::GpuUpdateMs)];
+pub const GPU: &[ConfigKey] = &[
+    ConfigKey::Int(IntKey::GpuUpdateMs),
+    ConfigKey::Int(IntKey::GpuPowerMaxWatts),
+];
 
 /// Options in the "disk" category.
 pub const DISK: &[ConfigKey] = &[

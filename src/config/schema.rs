@@ -284,6 +284,7 @@ config_schema! {
         NetUpdateMs => "net_update_ms" => { field refresh.net_update_ms },
         GpuUpdateMs => "gpu_update_ms" => { field refresh.gpu_update_ms },
         SwapMaxMib => "swap_max_mib" => { field mem.swap_max_mib },
+        GpuPowerMaxWatts => "gpu_power_max_watts" => { field gpu.gpu_power_max_watts },
         ProcUpdateMs => "proc_update_ms" => { field refresh.proc_update_ms },
         NetDownload => "net_download" => { field net.net_download },
         NetUpload => "net_upload" => { field net.net_upload },
@@ -325,7 +326,7 @@ impl IntKey {
             | Self::NetUpdateMs
             | Self::GpuUpdateMs
             | Self::ProcUpdateMs => 100,
-            Self::NetDownload | Self::NetUpload | Self::SwapMaxMib => 1,
+            Self::NetDownload | Self::NetUpload | Self::GpuPowerMaxWatts | Self::SwapMaxMib => 1,
         }
     }
 
@@ -344,6 +345,7 @@ impl IntKey {
             | Self::GpuUpdateMs
             | Self::ProcUpdateMs => 0..=86_400_000,
             Self::NetDownload | Self::NetUpload => 0..=10_000_000,
+            Self::GpuPowerMaxWatts => 0..=10_000,
             Self::SwapMaxMib => 0..=1_000_000_000,
         }
     }
@@ -384,6 +386,7 @@ impl IntKey {
             | Self::ProcUpdateMs => "must be 0..86400000 ms (0=inherit)",
             Self::NetDownload | Self::NetUpload => "must be 0..10000000 KiB/s",
             Self::SwapMaxMib => "must be 0..1000000000 MiB (0=current allocation)",
+            Self::GpuPowerMaxWatts => "must be 0..10000 W (0=automatic)",
         }
     }
 }

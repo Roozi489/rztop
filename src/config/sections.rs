@@ -280,6 +280,14 @@ pub struct ProcConfig {
     pub proc_mem_bytes: bool,
 }
 
+/// GPU display settings. The override changes only the meter scale.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GpuConfig {
+    /// Zero uses the collector's reference; positive values are watts.
+    pub gpu_power_max_watts: i64,
+}
+
 impl Default for ProcConfig {
     fn default() -> Self {
         Self {

@@ -434,6 +434,12 @@ pub(crate) fn apply_post_change_effects(key: ConfigKey, ctx: &mut InputContext) 
             .mark_widget(crate::domain::widget_kind::WidgetKind::Mem);
     }
 
+    if key == ConfigKey::Int(IntKey::GpuPowerMaxWatts) {
+        ctx.render
+            .dirty
+            .mark_widget(crate::domain::widget_kind::WidgetKind::Gpu);
+    }
+
     // Statusbar visibility / format changes alter the bar's
     // contribution to `min_terminal_size` (every visible item
     // contributes width via the `statusbar_*_label_width` fields

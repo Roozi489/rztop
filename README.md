@@ -244,6 +244,13 @@ against a reference growth ceiling in MiB, never below current allocation.
 This is display-only and does not change Windows paging settings. Determine the
 reference for the target machine rather than copying another PC's scale.
 
+### GPU power scale
+
+Set `gpu_power_max_watts` to your card's board-power rating (for example, `304`),
+or edit it under Options → GPU. The default, `0`, uses the collector's reference
+value. The scale applies to all displayed GPUs and does not change hardware power
+limits. AMD's automatic reference currently uses its startup power reading.
+
 ### Per-Widget Update Intervals
 
 By default all widgets share the global `update_ms` interval (default 2000ms). Each widget can override this with its own interval:

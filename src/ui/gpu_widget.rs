@@ -16,6 +16,7 @@ use super::WidgetArea;
 /// lifted into this struct so the renderer doesn't need separate
 /// `&CpuConfig` / `&UiConfig` borrows for one field each.
 pub struct GpuFrame {
+    pub power_max_watts: i64,
     pub temp_scale: TempScale,
     pub base_10: bool,
 }
@@ -183,9 +184,14 @@ pub fn draw(
     }
 
     let pwr_w = gpu.pwr_usage as f64 / 1000.0;
-    let pwr_max_w = gpu.pwr_max_usage as f64 / 1000.0;
-    let pwr_pct = if gpu.pwr_max_usage > 0 {
-        (gpu.pwr_usage * 100 / gpu.pwr_max_usage).clamp(0, 100) as i32
+    let max_power_mw = if frame.power_max_watts > 0 {
+        frame.power_max_watts.saturating_mul(1000)
+    } else {
+        gpu.pwr_max_usage
+    };
+    let pwr_max_w = max_power_mw as f64 / 1000.0;
+    let pwr_pct = if max_power_mw > 0 {
+        (gpu.pwr_usage.saturating_mul(100) / max_power_mw).clamp(0, 100) as i32
     } else {
         0
     };
@@ -267,6 +273,7 @@ impl super::Widget for GpuWidget {
         };
         let area = super::WidgetArea::from_dim(gpu_dim, params.rounded);
         let frame = GpuFrame {
+            power_max_watts: params.config.gpu.gpu_power_max_watts,
             temp_scale: params.config.cpu.temp_scale,
             base_10: params.config.ui.base_10_sizes,
         };
@@ -331,9 +338,31 @@ mod tests {
 
     fn make_frame() -> GpuFrame {
         GpuFrame {
+            power_max_watts: 0,
             temp_scale: TempScale::Celsius,
             base_10: false,
         }
+    }
+
+    #[test]
+    fn fixed_power_scale_overrides_idle_startup_reference() {
+        let mut gpu = make_gpu_info();
+        gpu.pwr_usage = 26_000;
+        gpu.pwr_max_usage = 26_000;
+        let mut frame = make_frame();
+        frame.power_max_watts = 304;
+        let theme = Theme::default();
+        let output = draw(&gpu, &make_area(), &theme, &frame, &CollectStatus::Ok);
+        assert!(strip_ansi(&output).contains("26W/304W"));
+        assert!(output.contains(&format!(
+            "{}{:>10}",
+            gradient_color(theme.gradient(tc::GRAD_GPU_POWER), 8),
+            "26W/304W"
+        )));
+        frame.power_max_watts = 0;
+        let auto = draw(&gpu, &make_area(), &theme, &frame, &CollectStatus::Ok);
+        assert!(strip_ansi(&auto).contains("26W/26W"));
+        assert_eq!(gpu.pwr_max_usage, 26_000);
     }
 
     #[test]

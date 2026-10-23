@@ -25,6 +25,14 @@ pub fn desc(key: ConfigKey) -> &'static [&'static str] {
             "Does not change Windows paging settings.",
             "Default: 0.",
         ],
+        ConfigKey::Int(IntKey::GpuPowerMaxWatts) => &[
+            "GPU power meter maximum, in watts.",
+            "0 uses the collector's reference value.",
+            "Set your card's board-power rating for a",
+            "fixed scale. Applies to all displayed GPUs.",
+            "Display only: does not change power limits.",
+            "Default: 0 (automatic).",
+        ],
         ConfigKey::Bool(BoolKey::ProcRankings) => &[
             "CPU, commit, GPU and VRAM rankings.",
             "Four compact lists stacked vertically.",
@@ -652,6 +660,7 @@ mod tests {
         "disk_update_ms",
         "net_update_ms",
         "gpu_update_ms",
+        "gpu_power_max_watts",
         "swap_max_mib",
         "proc_update_ms",
         "net_download",

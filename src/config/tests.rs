@@ -49,6 +49,18 @@ fn swap_scale_round_trips_and_validates() {
 }
 
 #[test]
+fn gpu_power_scale_round_trips_and_validates() {
+    let mut config = Config::new();
+    assert_eq!(config.gpu.gpu_power_max_watts, 0);
+    IntKey::GpuPowerMaxWatts.set(&mut config, 304);
+    let saved = toml::to_string(&config).unwrap();
+    let restored: Config = toml::from_str(&saved).unwrap();
+    assert_eq!(restored.gpu.gpu_power_max_watts, 304);
+    assert!(IntKey::GpuPowerMaxWatts.parse("-1").is_err());
+    assert!(IntKey::GpuPowerMaxWatts.parse("10001").is_err());
+}
+
+#[test]
 fn load_empty_file_uses_defaults() {
     let mut config = Config::new();
     let tmp = std::env::temp_dir().join("rtop_test_empty.toml");

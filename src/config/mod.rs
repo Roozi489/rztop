@@ -176,6 +176,8 @@ pub struct Config {
     #[serde(flatten)]
     pub proc: ProcConfig,
     #[serde(flatten)]
+    pub gpu: GpuConfig,
+    #[serde(flatten)]
     pub disk: DiskConfig,
     #[serde(flatten)]
     pub log: LogConfig,
@@ -226,6 +228,7 @@ impl Default for Config {
             mem: MemConfig::default(),
             net: NetConfig::default(),
             proc: ProcConfig::default(),
+            gpu: GpuConfig::default(),
             disk: DiskConfig::default(),
             log: LogConfig::default(),
             view: ViewConfig::default(),
