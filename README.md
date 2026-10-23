@@ -231,6 +231,19 @@ With `show_cpu_watts = true`, Watts appears directly below Load. The separate
 1/5/15-minute load-detail row is omitted. Watts remains visible as N/A when the
 sensor is unavailable; supported sensors may require administrator privileges.
 
+### System memory and swap
+
+The Commit row shows system committed bytes / the current Windows commit limit
+from `GetPerformanceInfo`, replacing the redundant Free row. Available still
+reports immediately reclaimable physical RAM. Commit's meter uses the current
+commit limit, independently of the swap display scale.
+
+Swap data comes from `EnumPageFilesW`. `swap_max_mib = 0` shows actual used space
+against current page-file allocation. A positive value shows allocated capacity
+against a reference growth ceiling in MiB, never below current allocation.
+This is display-only and does not change Windows paging settings. Determine the
+reference for the target machine rather than copying another PC's scale.
+
 ### Per-Widget Update Intervals
 
 By default all widgets share the global `update_ms` interval (default 2000ms). Each widget can override this with its own interval:

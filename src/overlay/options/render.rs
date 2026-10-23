@@ -199,6 +199,7 @@ pub const CPU: &[ConfigKey] = &[
 /// Options in the "mem" category.
 pub const MEM: &[ConfigKey] = &[
     ConfigKey::Bool(BoolKey::ShowSwap),
+    ConfigKey::Int(IntKey::SwapMaxMib),
     ConfigKey::Int(IntKey::MemUpdateMs),
 ];
 

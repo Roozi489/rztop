@@ -43,25 +43,10 @@ impl MemCollector {
 
                 self.info.stats.used = used;
                 self.info.stats.available = available;
-                self.info.stats.free = available;
-
-                // Swap = Page file - Physical memory
-                let swap_total = mem_status.ullTotalPageFile.saturating_sub(total);
-                let swap_avail = mem_status.ullAvailPageFile.saturating_sub(available);
-                let swap_used = swap_total.saturating_sub(swap_avail);
-
-                self.info.stats.swap_total = swap_total;
-                self.info.stats.swap_used = swap_used;
-                self.info.stats.swap_free = swap_avail;
 
                 if total > 0 {
                     push_pct(&mut self.info.percent.used, used, total);
                     push_pct(&mut self.info.percent.available, available, total);
-                    push_pct(&mut self.info.percent.free, available, total);
-                }
-                if swap_total > 0 {
-                    push_pct(&mut self.info.percent.swap_used, swap_used, swap_total);
-                    push_pct(&mut self.info.percent.swap_free, swap_avail, swap_total);
                 }
             } else {
                 tracing::warn!(
@@ -87,6 +72,34 @@ impl MemCollector {
             if GetPerformanceInfo(&mut perf, perf.cb).is_ok() {
                 let cached = cache_bytes(perf.SystemCache as u64, perf.PageSize as u64);
                 self.info.stats.cached = cached;
+                self.info.stats.commit_used =
+                    (perf.CommitTotal as u64).saturating_mul(perf.PageSize as u64);
+                self.info.stats.commit_limit =
+                    (perf.CommitLimit as u64).saturating_mul(perf.PageSize as u64);
+                push_pct(
+                    &mut self.info.percent.commit,
+                    self.info.stats.commit_used,
+                    self.info.stats.commit_limit,
+                );
+                let mut pages = PageFilePages::default();
+                // EnumPageFilesW invokes the callback synchronously with this live context.
+                if EnumPageFilesW(
+                    Some(sum_page_file),
+                    (&mut pages as *mut PageFilePages).cast(),
+                )
+                .is_ok()
+                {
+                    let (total, used, free) = pages.bytes(perf.PageSize as u64);
+                    self.info.stats.swap_total = total;
+                    self.info.stats.swap_used = used;
+                    self.info.stats.swap_free = free;
+                    push_pct(&mut self.info.percent.swap_used, used, total);
+                    push_pct(&mut self.info.percent.swap_free, free, total);
+                } else {
+                    self.status
+                        .downgrade(super::CollectStatus::Degraded("page-file query failed"));
+                }
+
                 let total = self
                     .info
                     .stats
@@ -97,8 +110,9 @@ impl MemCollector {
                 }
             } else {
                 self.info.stats.cached = 0;
-                self.status
-                    .downgrade(super::CollectStatus::Degraded("cache query failed"));
+                self.status.downgrade(super::CollectStatus::Degraded(
+                    "memory performance query failed",
+                ));
             }
         }
     }
@@ -136,17 +150,31 @@ pub fn calculate_used(total: u64, available: u64) -> u64 {
     total.saturating_sub(available)
 }
 
-#[cfg(test)]
-pub fn calculate_swap(
-    total_page: u64,
-    total_phys: u64,
-    avail_page: u64,
-    avail_phys: u64,
-) -> (u64, u64, u64) {
-    let swap_total = total_page.saturating_sub(total_phys);
-    let swap_avail = avail_page.saturating_sub(avail_phys);
-    let swap_used = swap_total.saturating_sub(swap_avail);
-    (swap_total, swap_used, swap_avail)
+#[derive(Default)]
+struct PageFilePages {
+    total: u64,
+    used: u64,
+}
+
+impl PageFilePages {
+    fn bytes(&self, page_size: u64) -> (u64, u64, u64) {
+        let total = self.total.saturating_mul(page_size);
+        let used = self.used.saturating_mul(page_size).min(total);
+        (total, used, total.saturating_sub(used))
+    }
+}
+
+unsafe extern "system" fn sum_page_file(
+    context: *mut std::ffi::c_void,
+    info: *mut windows::Win32::System::ProcessStatus::ENUM_PAGE_FILE_INFORMATION,
+    _: windows::core::PCWSTR,
+) -> windows::core::BOOL {
+    // SAFETY: EnumPageFilesW supplies a valid record; caller provides a live,
+    // exclusively borrowed PageFilePages for the synchronous enumeration.
+    let (pages, info) = unsafe { (&mut *context.cast::<PageFilePages>(), &*info) };
+    pages.total = pages.total.saturating_add(info.TotalSize as u64);
+    pages.used = pages.used.saturating_add(info.TotalInUse as u64);
+    true.into()
 }
 
 #[cfg(test)]
@@ -161,10 +189,23 @@ mod tests {
 
     #[test]
     fn calculate_swap_from_pagefile() {
-        let (total, used, free) = calculate_swap(32_000, 16_000, 20_000, 8_000);
-        assert_eq!(total, 16_000);
-        assert_eq!(free, 12_000);
-        assert_eq!(used, 4_000);
+        assert_eq!(
+            PageFilePages { total: 8, used: 2 }.bytes(4096),
+            (32768, 8192, 24576)
+        );
+        assert_eq!(PageFilePages::default().bytes(4096), (0, 0, 0));
+        assert_eq!(
+            PageFilePages { total: 1, used: 2 }.bytes(4096),
+            (4096, 4096, 0)
+        );
+        assert_eq!(
+            PageFilePages {
+                total: u64::MAX,
+                used: u64::MAX
+            }
+            .bytes(4096),
+            (u64::MAX, u64::MAX, 0)
+        );
     }
 
     #[test]

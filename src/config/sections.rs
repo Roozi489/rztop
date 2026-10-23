@@ -219,11 +219,16 @@ impl Default for StatusbarConfig {
 #[serde(default)]
 pub struct MemConfig {
     pub show_swap: bool,
+    /// Display scale in MiB; zero uses the current page-file allocation.
+    pub swap_max_mib: i64,
 }
 
 impl Default for MemConfig {
     fn default() -> Self {
-        Self { show_swap: true }
+        Self {
+            show_swap: true,
+            swap_max_mib: 0,
+        }
     }
 }
 

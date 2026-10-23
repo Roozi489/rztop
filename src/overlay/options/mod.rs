@@ -428,6 +428,12 @@ pub(crate) fn apply_post_change_effects(key: ConfigKey, ctx: &mut InputContext) 
         _ => {}
     }
 
+    if key == ConfigKey::Int(IntKey::SwapMaxMib) {
+        ctx.render
+            .dirty
+            .mark_widget(crate::domain::widget_kind::WidgetKind::Mem);
+    }
+
     // Statusbar visibility / format changes alter the bar's
     // contribution to `min_terminal_size` (every visible item
     // contributes width via the `statusbar_*_label_width` fields

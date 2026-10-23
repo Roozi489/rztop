@@ -39,6 +39,16 @@ fn four_process_panels_default_on_but_respect_saved_choice() {
 }
 
 #[test]
+fn swap_scale_round_trips_and_validates() {
+    let mut config = Config::new();
+    assert_eq!(config.mem.swap_max_mib, 0);
+    IntKey::SwapMaxMib.set(&mut config, 59487);
+    let restored: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+    assert_eq!(restored.mem.swap_max_mib, 59487);
+    assert!(IntKey::SwapMaxMib.parse("-1").is_err());
+}
+
+#[test]
 fn load_empty_file_uses_defaults() {
     let mut config = Config::new();
     let tmp = std::env::temp_dir().join("rtop_test_empty.toml");

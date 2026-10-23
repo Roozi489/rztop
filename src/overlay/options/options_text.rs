@@ -17,6 +17,14 @@ use crate::config::{BoolKey, ConfigKey, EnumKey, IntKey, StringKey};
 /// in the right-hand panel of the options menu.
 pub fn desc(key: ConfigKey) -> &'static [&'static str] {
     match key {
+        ConfigKey::Int(IntKey::SwapMaxMib) => &[
+            "Swap meter maximum in MiB (display only).",
+            "0 shows used / allocated page-file space.",
+            "Positive: allocated / growth ceiling.",
+            "The scale never falls below that allocation.",
+            "Does not change Windows paging settings.",
+            "Default: 0.",
+        ],
         ConfigKey::Bool(BoolKey::ProcRankings) => &[
             "CPU, commit, GPU and VRAM rankings.",
             "Four compact lists stacked vertically.",
@@ -644,6 +652,7 @@ mod tests {
         "disk_update_ms",
         "net_update_ms",
         "gpu_update_ms",
+        "swap_max_mib",
         "proc_update_ms",
         "net_download",
         "net_upload",

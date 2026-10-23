@@ -88,7 +88,7 @@ pub const GRAD_CPU_LOWER: GradientKey = GradientKey(1);
 pub const GRAD_USED: GradientKey = GradientKey(2);
 pub const GRAD_AVAILABLE: GradientKey = GradientKey(3);
 pub const GRAD_CACHED: GradientKey = GradientKey(4);
-pub const GRAD_FREE: GradientKey = GradientKey(5);
+// Slot 5 remains reserved for existing theme gradient indexing.
 
 // Network
 pub const GRAD_DOWNLOAD: GradientKey = GradientKey(6);

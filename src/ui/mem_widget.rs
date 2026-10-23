@@ -27,7 +27,7 @@ pub struct MemFrame<'a> {
 /// Preferred intrinsic height for the memory widget given the
 /// snapshot hints, in rows (including borders).
 ///
-/// 4 base rows (Used / Avail / Cached / Free) + 1 swap row when
+/// 4 base rows (Used / Avail / Cached / Commit) + 1 swap row when
 /// swap is user-visible + 2 borders.
 pub fn preferred_height(hints: &crate::draw::layout::LayoutHints) -> usize {
     let content = 4 + if hints.has_swap { 1 } else { 0 };
@@ -41,7 +41,7 @@ pub fn preferred_height(hints: &crate::draw::layout::LayoutHints) -> usize {
 /// │ Used  ■■■■■■■■■■■░░░ 5.2G │
 /// │ Avail ■■■■░░░░░░░░░░ 3.1G │
 /// │ Cache ■■■░░░░░░░░░░░ 1.8G │
-/// │ Free  ■■░░░░░░░░░░░░ 0.9G │
+/// │ Commit ■■░░░░░░░░ 12G/34G │
 /// │                            │
 /// │ Swap  ■■░░░░░░░░░░░░ 1.0G │
 /// │   1.0G / 8.0G              │
@@ -63,7 +63,6 @@ pub fn draw(
     let title_color = theme.color(tc::TITLE);
     let hi = theme.color(tc::HI_FG);
     let used_grad = theme.gradient(tc::GRAD_USED);
-    let free_grad = theme.gradient(tc::GRAD_FREE);
     let cached_grad = theme.gradient(tc::GRAD_CACHED);
     let avail_grad = theme.gradient(tc::GRAD_AVAILABLE);
 
@@ -106,7 +105,6 @@ pub fn draw(
     let used_meter = Meter::new(meter_w, used_grad, meter_bg);
     let avail_meter = Meter::new(meter_w, avail_grad, meter_bg);
     let cached_meter = Meter::new(meter_w, cached_grad, meter_bg);
-    let free_meter = Meter::new(meter_w, free_grad, meter_bg);
     let mut row = 0;
 
     let render_row = |buf: &mut AnsiBuffer,
@@ -179,46 +177,84 @@ pub fn draw(
         row += 1;
     }
 
-    let free = mem.stats.free;
-    let free_pct = (free * 100).checked_div(total_bytes).unwrap_or(0) as i32;
-    let free_color = gradient_color(free_grad, free_pct);
-    let free_str = tools::floating_humanizer(free, true, 0, false, false, frame.base_10);
     if row < inner_h {
-        render_row(
-            &mut buf,
-            "Free  ",
-            free_meter.render(free_pct),
-            &free_str,
-            fg,
-            free_color,
-            content_x,
-            y + 2 + row,
+        let limit = mem.stats.commit_limit;
+        let pct = mem
+            .stats
+            .commit_used
+            .saturating_mul(100)
+            .checked_div(limit)
+            .unwrap_or(0)
+            .min(100) as i32;
+        let value = if limit > 0 {
+            format!(
+                " {}/{}",
+                tools::floating_humanizer(
+                    mem.stats.commit_used,
+                    true,
+                    0,
+                    false,
+                    false,
+                    frame.base_10
+                ),
+                tools::floating_humanizer(limit, true, 0, false, false, frame.base_10)
+            )
+        } else {
+            " N/A".into()
+        };
+        let gradient = theme.gradient(tc::GRAD_CPU_UPPER);
+        let meter = Meter::new(
+            inner_w.saturating_sub(label_w + tools::ulen(&value)),
+            gradient,
+            meter_bg,
         );
+        buf.mv(content_x, y + 2 + row)
+            .color(fg)
+            .text("Commit")
+            .text(meter.render(pct))
+            .color(if limit > 0 {
+                gradient_color(gradient, pct)
+            } else {
+                theme.color(tc::INACTIVE_FG)
+            })
+            .text(&value);
         row += 1;
     }
 
     // Swap (no blank line, no separate total line — meter shows ratio)
     if frame.config.show_swap {
-        let swap_used = mem.stats.swap_used;
-        let swap_total = mem.stats.swap_total;
+        // A growth ceiling compares allocated capacity to potential capacity.
+        // Without a ceiling, retain the standard used/allocated view.
+        let swap_value = if frame.config.swap_max_mib > 0 {
+            mem.stats.swap_total
+        } else {
+            mem.stats.swap_used
+        };
+        let swap_total = mem
+            .stats
+            .swap_total
+            .max((frame.config.swap_max_mib.max(0) as u64).saturating_mul(1024 * 1024));
         let swap_pct = if swap_total > 0 {
-            (swap_used * 100 / swap_total.max(1)) as i32
+            (swap_value.saturating_mul(100) / swap_total.max(1)).min(100) as i32
         } else {
             0
         };
         let swap_color = gradient_color(used_grad, swap_pct);
-        let swap_str = tools::floating_humanizer(swap_used, true, 0, false, false, frame.base_10);
+        let swap_str = tools::floating_humanizer(swap_value, true, 0, false, false, frame.base_10);
+        let max_str = tools::floating_humanizer(swap_total, true, 0, false, false, frame.base_10);
+        let value = format!(" {swap_str}/{max_str}");
+        let swap_meter = Meter::new(
+            inner_w.saturating_sub(label_w + tools::ulen(&value)),
+            used_grad,
+            meter_bg,
+        );
         if row < inner_h {
-            render_row(
-                &mut buf,
-                "Swap  ",
-                used_meter.render(swap_pct),
-                &swap_str,
-                fg,
-                swap_color,
-                content_x,
-                y + 2 + row,
-            );
+            buf.mv(content_x, y + 2 + row)
+                .color(fg)
+                .text("Swap  ")
+                .text(swap_meter.render(swap_pct))
+                .color(swap_color)
+                .text(&value);
         }
     }
 
@@ -299,7 +335,8 @@ mod tests {
                 used: 8 * GIB,
                 available: 8 * GIB,
                 cached: 2 * GIB,
-                free: 6 * GIB,
+                commit_used: 12 * GIB,
+                commit_limit: 24 * GIB,
                 swap_total: 4 * GIB,
                 swap_used: GIB,
                 swap_free: 3 * GIB,
@@ -319,13 +356,38 @@ mod tests {
     }
 
     #[test]
+    fn commit_shows_current_limit_and_correct_gradient() {
+        let theme = Theme::default();
+        let mut info = make_mem_info();
+        let config = crate::config::MemConfig::default();
+        let frame = MemFrame {
+            config: &config,
+            base_10: false,
+        };
+        let output = draw(&info, &make_area(), &theme, &frame, &CollectStatus::Ok);
+        let plain = strip_ansi(&output);
+        assert!(plain.contains("Commit"));
+        assert!(!plain.contains("Free"));
+        assert!(output.contains(&format!(
+            "{} 12G/24G",
+            theme.gradient(tc::GRAD_CPU_UPPER)[50]
+        )));
+        info.stats.commit_limit = 0;
+        let output = draw(&info, &make_area(), &theme, &frame, &CollectStatus::Ok);
+        assert!(strip_ansi(&output).contains("N/A"));
+    }
+
+    #[test]
     fn draw_contains_mem_title() {
         let output = draw(
             &make_mem_info(),
             &make_area(),
             &Theme::default(),
             &MemFrame {
-                config: &crate::config::MemConfig { show_swap: true },
+                config: &crate::config::MemConfig {
+                    show_swap: true,
+                    ..Default::default()
+                },
                 base_10: false,
             },
             &CollectStatus::Ok,
@@ -341,7 +403,10 @@ mod tests {
             &make_area(),
             &Theme::default(),
             &MemFrame {
-                config: &crate::config::MemConfig { show_swap: true },
+                config: &crate::config::MemConfig {
+                    show_swap: true,
+                    ..Default::default()
+                },
                 base_10: false,
             },
             &CollectStatus::Ok,
@@ -357,7 +422,10 @@ mod tests {
             &make_area(),
             &Theme::default(),
             &MemFrame {
-                config: &crate::config::MemConfig { show_swap: true },
+                config: &crate::config::MemConfig {
+                    show_swap: true,
+                    ..Default::default()
+                },
                 base_10: false,
             },
             &CollectStatus::Ok,
@@ -376,7 +444,10 @@ mod tests {
             &make_area(),
             &Theme::default(),
             &MemFrame {
-                config: &crate::config::MemConfig { show_swap: false },
+                config: &crate::config::MemConfig {
+                    show_swap: false,
+                    ..Default::default()
+                },
                 base_10: false,
             },
             &CollectStatus::Ok,
@@ -402,7 +473,10 @@ mod tests {
             &make_area(),
             &theme,
             &MemFrame {
-                config: &crate::config::MemConfig { show_swap: true },
+                config: &crate::config::MemConfig {
+                    show_swap: true,
+                    ..Default::default()
+                },
                 base_10: false,
             },
             &CollectStatus::Ok,
@@ -416,6 +490,30 @@ mod tests {
     }
 
     #[test]
+    fn swap_uses_configured_scale_and_never_understates_allocation() {
+        let theme = Theme::default();
+        for (scale, expected, pct) in [(8192, "4.0G/8.0G", 50), (1024, "4.0G/4.0G", 100)] {
+            let output = draw(
+                &make_mem_info(),
+                &make_area(),
+                &theme,
+                &MemFrame {
+                    config: &crate::config::MemConfig {
+                        show_swap: true,
+                        swap_max_mib: scale,
+                    },
+                    base_10: false,
+                },
+                &CollectStatus::Ok,
+            );
+            assert!(output.contains(&format!(
+                "{} {expected}",
+                theme.gradient(tc::GRAD_USED)[pct]
+            )));
+        }
+    }
+
+    #[test]
     fn meter_row_labels_use_main_fg() {
         // Body label rule: meter row labels (Used, Avail, Cache, Free, Swap)
         // render in MAIN_FG so they distinguish from structural text (TITLE
@@ -426,13 +524,16 @@ mod tests {
             &make_area(),
             &theme,
             &MemFrame {
-                config: &crate::config::MemConfig { show_swap: true },
+                config: &crate::config::MemConfig {
+                    show_swap: true,
+                    ..Default::default()
+                },
                 base_10: false,
             },
             &CollectStatus::Ok,
         );
         let fg = theme.color(tc::MAIN_FG);
-        for label in &["Used  ", "Avail ", "Cache ", "Free  ", "Swap  "] {
+        for label in &["Used  ", "Avail ", "Cache ", "Commit", "Swap  "] {
             assert!(
                 output.contains(&format!("{fg}{label}")),
                 "mem label {label:?} should be preceded by MAIN_FG"
