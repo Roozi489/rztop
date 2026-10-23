@@ -251,6 +251,19 @@ or edit it under Options → GPU. The default, `0`, uses the collector's referen
 value. The scale applies to all displayed GPUs and does not change hardware power
 limits. AMD's automatic reference currently uses its startup power reading.
 
+### Ping history
+
+The network panel charts ICMP latency to `1.1.1.1` below the traffic graphs, with
+the latest latency on the right. Set `RTOP_PING_TARGET` to another IPv4 address
+before launching to change the target. Probes follow the global update interval,
+including live changes, independently of a network-widget interval override.
+The reply timeout is one second; a timeout means no ICMP reply, not necessarily
+no internet connectivity.
+
+The graph auto-scales with a 10 ms minimum ceiling. A cross marks a failed probe.
+Up to 3600 samples are retained in memory (one hour at 1000 ms); the visible
+history depends on panel width. The graph fits within the existing net panel.
+
 ### Per-Widget Update Intervals
 
 By default all widgets share the global `update_ms` interval (default 2000ms). Each widget can override this with its own interval:

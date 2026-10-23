@@ -172,6 +172,7 @@ pub(crate) fn pull_subsystem_data(
                     state.live.statusbar = Some(snap);
                     if render_ui {
                         state.render.dirty.mark_widget(WidgetKind::Statusbar);
+                        state.render.dirty.mark_widget(WidgetKind::Net);
                     }
                 }
             }

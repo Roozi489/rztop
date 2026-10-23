@@ -5,7 +5,7 @@ use crate::collect::disk::DiskCollector;
 use crate::collect::memory::MemCollector;
 use crate::collect::network::NetCollector;
 use crate::collect::process::ProcCollector;
-use crate::collect::statusbar::{STATUSBAR_UPDATE_MS, StatusbarCollector};
+use crate::collect::statusbar::StatusbarCollector;
 use crate::config::RefreshConfig;
 use crate::domain::{
     cpu::CpuInfo, disk::DiskData, gpu::GpuInfo, memory::MemInfo, network::NetInfo,
@@ -127,11 +127,14 @@ fn run_collector_loop<C>(
 {
     let mut interval_ms = initial_interval_ms.max(100);
     loop {
+        let cycle_started = std::time::Instant::now();
         collector.collect();
         slot.publish(collector.snapshot());
         let _ = event_tx.send(wakeup);
 
-        match cmd_rx.recv_timeout(Duration::from_millis(interval_ms)) {
+        match cmd_rx.recv_timeout(
+            Duration::from_millis(interval_ms).saturating_sub(cycle_started.elapsed()),
+        ) {
             Ok(CollectorCommand::SetInterval(ms)) => interval_ms = ms.max(100),
             Ok(CollectorCommand::Shutdown) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -212,10 +215,7 @@ fn send_command(
 
 /// Resolve every collector subsystem's effective interval from
 /// `refresh` and yield one `(SubsystemKind, u64)` per subsystem
-/// in `SubsystemKind::iter`-canonical order, except `Statusbar`
-/// which has a hardcoded cadence
-/// ([`crate::collect::statusbar::STATUSBAR_UPDATE_MS`]) and is
-/// not user-configurable.
+/// in canonical order. Ping and statusbar follow the global interval.
 ///
 /// This is the shared driver behind both startup spawning (where
 /// each subsystem's spawn site reads its own field directly for
@@ -235,6 +235,7 @@ fn resolved_intervals(refresh: &RefreshConfig) -> impl Iterator<Item = (Subsyste
             SubsystemKind::Proc,
             refresh.effective(refresh.proc_update_ms),
         ),
+        (SubsystemKind::Statusbar, refresh.effective(0)),
     ]
     .into_iter()
 }
@@ -324,20 +325,10 @@ impl CollectorManager {
             AppEvent::SubsystemReady(SubsystemKind::Proc),
         );
 
-        // Statusbar thread — fixed 1 Hz cadence (the wall-clock seconds
-        // digit advances at human-noticeable cadence and uptime stays
-        // in sync). Cadence is hardcoded in the collector module; if a
-        // future change wants user-configurable cadence, replace
-        // `STATUSBAR_UPDATE_MS` with a `RefreshConfig` lookup here.
-        //
-        // The snapshot omits a `status` field because
-        // `GetTickCount64` is infallible — there is no degraded
-        // mode to surface. Mirroring the other subsystems'
-        // `info`/`status` shape would only add a permanently-`Ok`
-        // field that no caller could meaningfully consult.
+        // Ping and uptime follow the global update interval.
         let (statusbar_tx, statusbar_join) = spawn_collector(
             StatusbarCollector::new,
-            STATUSBAR_UPDATE_MS,
+            refresh.effective(0),
             &statusbar_slot,
             &event_tx,
             AppEvent::SubsystemReady(SubsystemKind::Statusbar),
@@ -392,10 +383,7 @@ impl CollectorManager {
     /// and behavior is unchanged. This keeps the broadcast loop free
     /// of per-subsystem change tracking.
     ///
-    /// The statusbar is intentionally excluded — its cadence is
-    /// hardcoded at the collector module (see
-    /// [`crate::collect::statusbar::STATUSBAR_UPDATE_MS`]) and
-    /// `RefreshConfig` carries no field for it.
+    /// Ping/statusbar use the global interval, independently of network overrides.
     pub(crate) fn apply_refresh(&self, refresh: &RefreshConfig) {
         for (kind, ms) in resolved_intervals(refresh) {
             send_command(
@@ -513,14 +501,8 @@ mod tests {
                 (SubsystemKind::Net, 2000),
                 (SubsystemKind::Gpu, 2000),
                 (SubsystemKind::Proc, 2000),
+                (SubsystemKind::Statusbar, 2000),
             ],
-        );
-        assert!(
-            !pairs
-                .iter()
-                .any(|(k, _)| matches!(k, SubsystemKind::Statusbar)),
-            "Statusbar must never appear — its cadence is hardcoded \
-             via STATUSBAR_UPDATE_MS",
         );
     }
 
@@ -540,14 +522,22 @@ mod tests {
     }
 
     #[test]
+    fn ping_follows_global_changes_not_network_override() {
+        for global in [2000, 1000, 500] {
+            let r = refresh_with(global, 0, 0, 0, 250, 0, 0);
+            let intervals: std::collections::HashMap<_, _> = resolved_intervals(&r).collect();
+            assert_eq!(intervals[&SubsystemKind::Statusbar], global as u64);
+            assert_eq!(intervals[&SubsystemKind::Net], 250);
+        }
+    }
+
+    #[test]
     fn resolved_intervals_canonical_order_matches_subsystem_kind() {
         // Iteration order is contract: Cpu, Mem, Disk, Net, Gpu,
-        // Proc. This mirrors `SubsystemKind::iter` minus Statusbar.
+        // Proc and Statusbar. This mirrors `SubsystemKind::iter`.
         let r = refresh_with(1000, 0, 0, 0, 0, 0, 0);
         let kinds: Vec<SubsystemKind> = resolved_intervals(&r).map(|(k, _)| k).collect();
-        let expected: Vec<SubsystemKind> = SubsystemKind::iter()
-            .filter(|k| !matches!(k, SubsystemKind::Statusbar))
-            .collect();
+        let expected: Vec<SubsystemKind> = SubsystemKind::iter().collect();
         assert_eq!(kinds, expected);
     }
 

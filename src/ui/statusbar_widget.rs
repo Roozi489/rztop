@@ -56,6 +56,7 @@ pub struct StatusbarFrame<'a> {
     pub filter_active: bool,
     pub update_ms: u64,
     pub uptime_seconds: u64,
+    pub ping: &'a str,
     pub clock_format: &'a str,
     /// Honor the global `ui.theme_background` toggle. When `false`,
     /// the bar paints over the terminal default background
@@ -169,7 +170,12 @@ pub fn draw(area: &WidgetArea, theme: &Theme, frame: &StatusbarFrame) -> String 
     // of padding from the bar's right edge so the clock doesn't
     // sit flush against whatever lies to the right of the bar.
     // Mirrors `LEFT_PAD` for visual symmetry.
-    let (right_text, right_visible_width) = render_right(frame, &bg, fg, sep);
+    let (mut right_text, mut right_visible_width) = render_right(frame, &bg, fg, sep);
+    // Ping is optional when space is tight; never widen the window or overwrite controls.
+    if LEFT_PAD + left_visible_width + 1 + right_visible_width + RIGHT_PAD > area.width {
+        let compact = StatusbarFrame { ping: "", ..*frame };
+        (right_text, right_visible_width) = render_right(&compact, &bg, fg, sep);
+    }
     if right_visible_width > 0 && right_visible_width + RIGHT_PAD <= area.width {
         let right_x = start_x + area.width - right_visible_width - RIGHT_PAD;
         buf.mv(right_x, row).text(&bg).text(fg).text(&right_text);
@@ -225,6 +231,9 @@ fn render_left(frame: &StatusbarFrame, bg: &str, fg: &str, hi: &str, sep: &str) 
 /// the width.
 fn render_right(frame: &StatusbarFrame, bg: &str, fg: &str, sep: &str) -> (String, usize) {
     let mut items: Vec<(String, usize)> = Vec::new();
+    if !frame.ping.is_empty() {
+        items.push((frame.ping.to_string(), tools::ulen(frame.ping)));
+    }
     if frame.show_uptime {
         let label = uptime_label(frame.uptime_seconds);
         let w = tools::ulen(&label);
@@ -390,6 +399,7 @@ impl super::Widget for StatusbarWidget {
             filter_active: params.filter_active,
             update_ms: params.update_ms,
             uptime_seconds,
+            ping: "",
             clock_format: &params.config.statusbar.statusbar_clock_format,
             theme_background: params.config.ui.theme_background,
         };
@@ -449,6 +459,7 @@ mod tests {
             filter_active: false,
             update_ms: 2000,
             uptime_seconds: 86_400,
+            ping: "",
             clock_format: "",
             theme_background: true,
         }

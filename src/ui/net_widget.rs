@@ -39,6 +39,8 @@ pub struct NetFrame {
     pub graph_symbol: GraphMode,
     pub swap_dl_ul: bool,
     pub base_10: bool,
+    pub ping: String,
+    pub ping_history: std::collections::VecDeque<Option<i64>>,
 }
 
 /// Draw the network widget into an ANSI string matching btop's layout.
@@ -159,8 +161,10 @@ pub fn draw(
     let top_arrow = if swap { "▲" } else { "▼" };
     let bot_arrow = if swap { "▼" } else { "▲" };
 
-    let top_rows = inner_h / 2;
-    let bot_rows = inner_h - top_rows;
+    let ping_rows = usize::from(inner_h >= 3 && width >= 24);
+    let traffic_rows = inner_h - ping_rows;
+    let top_rows = traffic_rows / 2;
+    let bot_rows = traffic_rows - top_rows;
 
     {
         if top_rows > 0 {
@@ -208,8 +212,50 @@ pub fn draw(
         let label = format!("{} {}", speed, bot_arrow);
         let label_vis = tools::ulen(&label);
         let lx = x + width.saturating_sub(label_vis + 1);
-        let label_y = y + height - 1;
+        let label_y = y + height - 1 - ping_rows;
         buf.mv(lx, label_y).color(bot_color).text(&label);
+    }
+
+    if ping_rows > 0 {
+        let row_y = y + height - 1;
+        let value = settings.ping.strip_prefix("ping ").unwrap_or("...");
+        let value_w = 8;
+        let chart_w = width.saturating_sub(4 + 5 + value_w);
+        let start = settings.ping_history.len().saturating_sub(chart_w);
+        let maximum = settings
+            .ping_history
+            .iter()
+            .skip(start)
+            .flatten()
+            .copied()
+            .max()
+            .unwrap_or(10)
+            .max(10);
+        let data = settings
+            .ping_history
+            .iter()
+            .map(|v| v.unwrap_or(0))
+            .collect();
+        let mut graph = Graph::new(chart_w, 1, graph_sym, false, maximum, 0);
+        buf.mv(x + 3, row_y)
+            .color(theme.color(tc::MAIN_FG))
+            .text("Ping ");
+        let graph_x = x + 8;
+        if let Some(row) = graph.render_rows(&data, dl_grad).first() {
+            buf.text(row);
+        }
+        // Failed probes are explicit crosses, never misleading zero-latency samples.
+        let pad = chart_w.saturating_sub(settings.ping_history.len());
+        for (index, sample) in settings.ping_history.iter().skip(start).enumerate() {
+            if sample.is_none() {
+                buf.mv(graph_x + pad + index, row_y)
+                    .color(theme.color(tc::HI_FG))
+                    .text("×");
+            }
+        }
+        buf.mv(graph_x + chart_w, row_y)
+            .color(theme.color(tc::MAIN_FG))
+            .text(&tools::rjust(value, value_w, true));
     }
 
     // Top-right border (combined scope chip):
@@ -393,6 +439,12 @@ impl super::Widget for NetWidget {
             ),
             swap_dl_ul: params.config.net.swap_upload_download,
             base_10: params.config.ui.base_10_sizes,
+            ping: params
+                .statusbar
+                .map_or_else(|| "ping ...".into(), |s| s.info.ping.clone()),
+            ping_history: params
+                .statusbar
+                .map_or_else(Default::default, |s| s.info.ping_history.clone()),
         };
         output.push_str(&draw(net_info, &area, params.theme, &frame, &net.status));
     }
@@ -460,6 +512,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ping_history_is_inside_net_below_traffic() {
+        let mut frame = make_frame();
+        frame.ping = "ping 12ms".into();
+        frame.ping_history = [Some(4), None, Some(12)].into();
+        let area = make_area();
+        let output = draw(
+            &make_net_info(),
+            &area,
+            &Theme::default(),
+            &frame,
+            &CollectStatus::Ok,
+        );
+        let plain = strip_ansi(&output);
+        assert!(plain.contains("12ms"));
+        assert!(plain.contains('×'));
+        assert_eq!(
+            cursor_row_for_substring(&output, "Ping "),
+            Some(area.y + area.height - 1)
+        );
+        assert_eq!(
+            cursor_row_for_substring(&output, "12ms"),
+            Some(area.y + area.height - 1)
+        );
+        assert!(cursor_row_for_substring(&output, "▲").unwrap() < area.y + area.height - 1);
+        frame.ping = "ping timeout".into();
+        let output = draw(
+            &make_net_info(),
+            &area,
+            &Theme::default(),
+            &frame,
+            &CollectStatus::Ok,
+        );
+        assert!(strip_ansi(&output).contains("timeout"));
+    }
+
     fn make_frame() -> NetFrame {
         NetFrame {
             auto_scale: true,
@@ -469,6 +557,8 @@ mod tests {
             graph_symbol: GraphMode::Braille,
             swap_dl_ul: false,
             base_10: false,
+            ping: "ping ...".into(),
+            ping_history: Default::default(),
         }
     }
 
