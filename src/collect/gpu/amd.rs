@@ -89,6 +89,8 @@ struct AdlMemoryInfoX4 {
     i_invisible_memory_size: i64,
     i_visible_memory_size: i64,
     i_vram_vendor_rev_id: i64,
+    i_memory_bandwidth_x2: i64,
+    i_memory_bit_rate_x2: i64,
 }
 
 impl AdlMemoryInfoX4 {
@@ -501,8 +503,27 @@ fn build_initial_info(
     // valid pointer.
     let ret = unsafe { (adl.adapter_memory_info_x4_get)(ctx, adapter.adapter_index, &mut mem) };
     if ret == ADL_OK && mem.i_memory_size > 0 {
-        gpu.mem_total = (mem.i_memory_size * 1024 * 1024) as u64;
+        // ADLMemoryInfoX4 reports the memory size in bytes.
+        gpu.mem_total = mem.i_memory_size as u64;
     }
 
     gpu
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn memory_info_x4_matches_adl_sdk_layout() {
+        // AMD's adl_structures.h defines eight 64-bit integers and
+        // a 256-byte memory-type string. Omitting the final X4 fields
+        // lets ADL overwrite the caller's stack during GPU discovery.
+        // https://gpuopen-librariesandsdks.github.io/adl/structADLMemoryInfoX4.html
+        assert_eq!(size_of::<AdlMemoryInfoX4>(), 320);
+        assert_eq!(align_of::<AdlMemoryInfoX4>(), 8);
+        assert_eq!(offset_of!(AdlMemoryInfoX4, i_memory_bandwidth_x2), 304);
+        assert_eq!(offset_of!(AdlMemoryInfoX4, i_memory_bit_rate_x2), 312);
+    }
 }
