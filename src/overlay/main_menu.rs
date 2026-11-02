@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Main menu overlay subsystem: state, render, and per-key actions.
 //!
 //! The main menu (`m` to open; Esc or `m` to close) presents three
@@ -153,7 +154,11 @@ pub fn render(state: &MainMenuState, term: TerminalSize, theme: &Theme) -> Strin
         let menu_x = (term.width.saturating_sub(w)) / 2;
 
         for (line_idx, line) in menu.iter().enumerate() {
-            banner::paint_transparent_row(&mut out, menu_x + 1, cy, &colors[line_idx], line);
+            out.push_str(&crate::term::mv(menu_x + 1, cy));
+            out.push_str(&crate::draw::controls::button(
+                &format!("{}{line}", colors[line_idx]),
+                crate::draw::controls::MODAL + ['o', '?', 'q'][i] as u32,
+            ));
             cy += 1;
         }
     }

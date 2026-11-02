@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Per-frame application state owned by the event loop.
 //!
 //! `AppState` bundles the structs that live for the entire process
@@ -744,6 +745,8 @@ impl LiveData {
             has_cpu_temp: config.cpu.check_temp
                 && self.cpu.as_ref().is_some_and(|c| !c.info.temp.is_empty()),
             has_cpu_watts: config.cpu.show_cpu_watts,
+            show_cpu_clock: config.cpu.show_cpu_freq,
+            proc_rankings: config.proc.proc_rankings,
             disk_rows_per_unit,
 
             statusbar_show_menu: sb.statusbar_show_menu,
@@ -854,7 +857,7 @@ pub(crate) struct ProcessViewState {
 #[derive(Debug, Clone)]
 pub(crate) enum DetailPanel {
     Closed,
-    Open(OpenDetail),
+    Open(Box<OpenDetail>),
 }
 
 /// Inner state for [`DetailPanel::Open`].
@@ -913,10 +916,11 @@ impl ProcessViewState {
     /// open-detail path total — no `expect`, no `Option` shuffle.
     pub(crate) fn open_detail(&mut self, info: ProcInfo) {
         let pid = info.pid;
-        self.detail = DetailPanel::Open(OpenDetail {
+        // Box only the open payload so closed process views remain small.
+        self.detail = DetailPanel::Open(Box::new(OpenDetail {
             pid,
             last_seen: info,
-        });
+        }));
     }
 
     /// Close the detail panel. No-op when already closed.
@@ -1378,7 +1382,7 @@ mod tests {
         state.overlay.active = ActiveModal::None;
         assert!(state.overlay.render_ui());
 
-        state.overlay.active = ActiveModal::Filter(FilterState);
+        state.overlay.active = ActiveModal::Filter(FilterState::default());
         assert!(state.overlay.render_ui());
 
         state.overlay.active = ActiveModal::Main(MainMenuState::new());

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::collect::CollectStatus;
 use crate::domain::config_enums::{CpuGraphSource, TempScale};
 use crate::domain::cpu::CpuInfo;
@@ -39,6 +40,7 @@ pub struct CpuFrame<'a> {
     pub auto_scale: bool,
     pub invert_lower: bool,
     pub show_cpu_freq: bool,
+    pub clock_max_mhz: i64,
     pub cpu_name: &'a str,
     pub custom_cpu_name: &'a str,
     pub show_cpu_watts: bool,
@@ -102,7 +104,7 @@ pub fn draw(
     let has_temp = settings.check_temp && !cpu.temp.is_empty();
     let show_coretemp_flag = has_temp && settings.show_coretemp;
     let has_watts = settings.show_cpu_watts;
-    let stats_rows = stats_row_count(has_temp, has_watts);
+    let stats_rows = stats_row_count(has_temp, has_watts, settings.show_cpu_freq);
     // +1 for the section divider.
     let panel_content_overhead = stats_rows + 1;
 
@@ -272,6 +274,7 @@ pub fn draw(
                 cpu_max_watts: settings.cpu_max_watts,
                 stats_rows,
                 show_freq: settings.show_cpu_freq,
+                clock_max_mhz: settings.clock_max_mhz,
             },
         ));
     }
@@ -335,6 +338,7 @@ impl super::Widget for CpuWidget {
             auto_scale: params.config.cpu.cpu_auto_scale,
             invert_lower: params.config.cpu.cpu_invert_lower,
             show_cpu_freq: params.config.cpu.show_cpu_freq,
+            clock_max_mhz: params.config.cpu.cpu_clock_max_mhz,
             cpu_name: &cpu.info.cpu_name,
             custom_cpu_name: &params.config.cpu.custom_cpu_name,
             show_cpu_watts: params.config.cpu.show_cpu_watts,
@@ -497,6 +501,8 @@ mod tests {
         let mut cpu = CpuInfo {
             cpu_name: "Test CPU".into(),
             cpu_hz: "3.50 GHz".into(),
+            clock_mhz: 3500,
+            peak_clock_mhz: 3500,
             core_count: 4,
             load_avg: [0.84, 0.38, 0.40],
             ..CpuInfo::default()
@@ -512,6 +518,44 @@ mod tests {
             VecDeque::from([80]),
         ];
         cpu
+    }
+
+    #[test]
+    fn clock_visibility_unknown_and_manual_scale() {
+        let theme = Theme::default();
+        let mut cpu = make_cpu_info();
+        let mut frame = make_frame();
+        frame.clock_max_mhz = 7000;
+        let out = draw(&cpu, &make_area(), &theme, &frame, &CollectStatus::Ok);
+        assert!(out.contains(&format!(
+            "{}  3.50 GHz",
+            theme.gradient(tc::GRAD_CPU_UPPER)[50]
+        )));
+        assert_eq!(strip_ansi(&out).matches("3.50 GHz").count(), 1);
+        assert!(!strip_ansi(&out).contains("Load"));
+        frame.show_cpu_freq = false;
+        assert!(
+            !strip_ansi(&draw(
+                &cpu,
+                &make_area(),
+                &theme,
+                &frame,
+                &CollectStatus::Ok
+            ))
+            .contains("Clock")
+        );
+        frame.show_cpu_freq = true;
+        cpu.clock_mhz = 0;
+        assert!(
+            strip_ansi(&draw(
+                &cpu,
+                &make_area(),
+                &theme,
+                &frame,
+                &CollectStatus::Ok
+            ))
+            .contains("N/A")
+        );
     }
 
     fn make_area() -> WidgetArea {
@@ -536,6 +580,7 @@ mod tests {
             auto_scale: false,
             invert_lower: true,
             show_cpu_freq: true,
+            clock_max_mhz: 0,
             cpu_name: "Test CPU",
             custom_cpu_name: "",
             show_cpu_watts: false,
@@ -613,7 +658,7 @@ mod tests {
         );
         let plain = strip_ansi(&output);
         assert!(plain.contains("CPU"), "should contain CPU stats row");
-        assert!(plain.contains("Load"), "should contain Load stats row");
+        assert!(plain.contains("Clock"), "should contain Clock stats row");
     }
 
     #[test]
@@ -662,7 +707,7 @@ mod tests {
             &CollectStatus::Ok,
         );
         let plain = strip_ansi(&output);
-        assert!(plain.contains("0.84"), "should contain 1-min load: {plain}");
+        assert!(!plain.contains("0.84"), "should omit 1-min load: {plain}");
         assert!(!plain.contains("0.38"), "should omit 5-min load: {plain}");
         for label in ["1m:", "5m:", "15m:"] {
             assert!(!plain.contains(label));
@@ -692,15 +737,15 @@ mod tests {
             "CPU stats value should be GRAD_CPU_UPPER[50] followed by '       50%'"
         );
         // Load = 0.84 → load_pct = 84.
-        let expected_load = format!("{}{}", cpu_grad[84], "      0.84");
+        let expected_load = format!("{}{}", cpu_grad[100], "  3.50 GHz");
         assert!(
             output.contains(&expected_load),
-            "Load stats value should be GRAD_CPU_UPPER[84] followed by '      0.84'"
+            "Clock stats value should use the session peak gradient; '      0.84'"
         );
     }
 
     #[test]
-    fn watts_row_follows_load_and_remains_visible_without_sensor() {
+    fn watts_row_follows_clock_and_remains_visible_without_sensor() {
         let mut settings = make_frame();
         settings.show_cpu_watts = true;
         let output = draw(
@@ -710,7 +755,7 @@ mod tests {
             &settings,
             &CollectStatus::Ok,
         );
-        assert!(output.find("Load  ").unwrap() < output.find("Watts ").unwrap());
+        assert!(output.find("Clock ").unwrap() < output.find("Watts ").unwrap());
         assert!(output.contains("N/A"));
         settings.cpu_watts = Some(42.5);
         let output = draw(
@@ -720,7 +765,7 @@ mod tests {
             &settings,
             &CollectStatus::Ok,
         );
-        assert!(output.find("Load  ").unwrap() < output.find("Watts ").unwrap());
+        assert!(output.find("Clock ").unwrap() < output.find("Watts ").unwrap());
         assert!(output.contains("42.5 W"));
         assert!(!output.contains("N/A"));
     }
@@ -779,7 +824,7 @@ mod tests {
             &CollectStatus::Ok,
         );
         let fg = theme.color(tc::MAIN_FG);
-        for label in &["CPU   ", "Watts ", "Load  "] {
+        for label in &["CPU   ", "Watts ", "Clock "] {
             assert!(
                 output.contains(&format!("{fg}{label}")),
                 "cpu stats label {label:?} should be preceded by MAIN_FG"

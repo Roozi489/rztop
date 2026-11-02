@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use super::ProcFrame;
 use super::rows::{display_proc_cpu, format_proc_memory, mem_percent};
 use super::{STATE_GRADIENT_EXITED, STATE_GRADIENT_RUNNING, STATE_GRADIENT_SUSPENDED};
@@ -549,6 +550,7 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                io_rates: None,
                 ram: 0,
                 gpu_p: None,
                 gpu_mem: None,
@@ -567,6 +569,7 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                io_rates: None,
                 ram: 0,
                 gpu_p: None,
                 gpu_mem: None,
@@ -585,6 +588,7 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                io_rates: None,
                 ram: 0,
                 gpu_p: None,
                 gpu_mem: None,
@@ -594,6 +598,8 @@ mod tests {
 
     fn make_frame() -> ProcFrame {
         ProcFrame {
+            ranking_weights: [1; 5],
+            memory_sort_ram: false,
             proc_per_core: true,
             core_count: 4,
             proc_mem_bytes: true,

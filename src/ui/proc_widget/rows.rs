@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use super::layout::{ProcColumns, ProcWidgetLayout};
 use super::{ProcColors, ProcFrame};
 use crate::domain::process::{ProcDisplayEntry, ProcInfo};
@@ -356,6 +357,8 @@ mod tests {
 
     fn make_frame() -> ProcFrame {
         ProcFrame {
+            ranking_weights: [1; 5],
+            memory_sort_ram: false,
             proc_per_core: true,
             core_count: 4,
             proc_mem_bytes: true,
@@ -369,6 +372,8 @@ mod tests {
     #[test]
     fn display_proc_cpu_matches_total_power_semantics() {
         let settings = ProcFrame {
+            ranking_weights: [1; 5],
+            memory_sort_ram: false,
             proc_per_core: false,
             core_count: 24,
             ..make_frame()
@@ -381,6 +386,8 @@ mod tests {
     #[test]
     fn display_proc_cpu_matches_per_core_semantics() {
         let settings = ProcFrame {
+            ranking_weights: [1; 5],
+            memory_sort_ram: false,
             proc_per_core: true,
             core_count: 24,
             ..make_frame()
@@ -393,6 +400,8 @@ mod tests {
     #[test]
     fn display_proc_cpu_handles_invalid_values() {
         let settings = ProcFrame {
+            ranking_weights: [1; 5],
+            memory_sort_ram: false,
             proc_per_core: false,
             core_count: 0,
             ..make_frame()

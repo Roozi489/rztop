@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Dirty-flag execution: rebuild derived state, recompute the
 //! cached layout, and produce the per-frame ANSI output.
 //!
@@ -75,13 +76,18 @@ fn calculate_layout(
     config: &config::Config,
     size: TerminalSize,
 ) -> draw::layout::Layout {
-    draw::layout::calc_sizes(&draw::layout::LayoutConfig {
+    let cfg = draw::layout::LayoutConfig {
         term_width: size.width,
         term_height: size.height,
         root: config.layout_spec().clone(),
         hints: state.live.layout_hints(config, &state.view, &state.filter),
         hidden: state.compose_hidden(config),
-    })
+    };
+    if config.resizing.layout == cfg.root.to_string() {
+        draw::layout::calc_sizes_resized(&cfg, Some(&config.resizing))
+    } else {
+        draw::layout::calc_sizes(&cfg)
+    }
 }
 
 pub(crate) fn write_dirty_frame(
@@ -119,6 +125,7 @@ pub(crate) fn write_dirty_frame(
             compose_modal_frame(state, config, theme, &active, size, mode, key)
         }
     };
+    super::mouse::prepare_screen(state, config, terminal);
     if let Err(e) = terminal.write_synced(&output) {
         tracing::warn!(
             subsystem = %crate::log::Subsystem::Terminal,

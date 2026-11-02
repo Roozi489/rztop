@@ -1,10 +1,10 @@
 [package]
-name = "rtop"
-description = "A terminal-based system monitor for Windows, inspired by btop"
+name = "rztop"
+description = "A terminal-based system monitor for Windows, forked from rtop"
 version = "0.24.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
-repository = "https://github.com/freddiehaddad/rtop"
+repository = "https://github.com/Roozi489/rtop"
 authors = ["Freddie Haddad"]
 rust-version = "1.95"
 

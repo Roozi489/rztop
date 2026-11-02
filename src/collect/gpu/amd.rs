@@ -21,6 +21,26 @@ const SENSOR_ASIC_POWER: usize = 23;
 /// Total board power in watts (RDNA3+).
 const SENSOR_BOARD_POWER: usize = 73;
 
+// Modified for rztop on 2026-11-02. ABI sources and limitations: docs/amd-references.md.
+#[repr(C)]
+struct AdlPMLogSensorLimits {
+    ranges: [[i32; 2]; ADL_PMLOG_MAX_SENSORS],
+}
+
+#[derive(Default)]
+struct PowerReferences {
+    board_mw: i64,
+    asic_mw: i64,
+}
+
+fn power_range_mw([min, max]: [i32; 2]) -> i64 {
+    if min >= 0 && max > 0 && max >= min {
+        i64::from(max) * 1000
+    } else {
+        0
+    }
+}
+
 #[repr(C)]
 struct AdapterInfo {
     i_size: i32,
@@ -113,8 +133,13 @@ type Adl2NewQueryPMLogDataGet =
 type Adl2AdapterMemoryInfoX4Get =
     unsafe extern "C" fn(*mut c_void, i32, *mut AdlMemoryInfoX4) -> i32;
 type Adl2AdapterDedicatedVRAMUsageGet = unsafe extern "C" fn(*mut c_void, i32, *mut i32) -> i32;
+type AdlObservedGameClockInfoGet =
+    unsafe extern "C" fn(*mut c_void, i32, *mut i32, *mut i32, *mut i32, *mut i32) -> i32;
+type AdlSensorLimitsGet = unsafe extern "C" fn(*mut c_void, i32, *mut AdlPMLogSensorLimits) -> i32;
 
 struct AdlFunctions {
+    observed_clocks: Option<AdlObservedGameClockInfoGet>,
+    sensor_limits: Option<AdlSensorLimitsGet>,
     _library: OwnedLibrary,
     main_control_create: Adl2MainControlCreate,
     main_control_destroy: Adl2MainControlDestroy,
@@ -169,7 +194,25 @@ impl AdlFunctions {
             }};
         }
 
+        macro_rules! optional_fn {
+            ($name:literal, $ty:ty) => {{
+                // SAFETY: live library handle and static NUL-terminated export name.
+                unsafe { GetProcAddress(handle, PCSTR(concat!($name, "\0").as_ptr())) }.map(
+                    |proc| {
+                        // SAFETY: signature verified against AMD SDK; library is retained by Self.
+                        unsafe {
+                            std::mem::transmute::<unsafe extern "system" fn() -> isize, $ty>(proc)
+                        }
+                    },
+                )
+            }};
+        }
         Some(Self {
+            observed_clocks: optional_fn!(
+                "ADL_Adapter_ObservedGameClockInfo_Get",
+                AdlObservedGameClockInfoGet
+            ),
+            sensor_limits: optional_fn!("ADL2_Adapter_PMLog_SensorLimits_Get", AdlSensorLimitsGet),
             _library: library,
             main_control_create: load_fn!("ADL2_Main_Control_Create", Adl2MainControlCreate),
             main_control_destroy: load_fn!("ADL2_Main_Control_Destroy", Adl2MainControlDestroy),
@@ -275,6 +318,7 @@ impl Drop for AdlSession {
 /// `(session.context, device.adapter_index, …)`.
 pub(super) struct DeviceState {
     pub(super) adapter_index: i32,
+    power: PowerReferences,
 }
 
 /// One collection cycle for a single AMD device.
@@ -316,9 +360,12 @@ pub(super) fn collect(
 
         // Power — prefer board power (RDNA3+), fall back to ASIC power.
         // Sensor values are in watts; domain stores milliwatts.
-        let power_w = pmlog
-            .get(SENSOR_BOARD_POWER)
-            .or_else(|| pmlog.get(SENSOR_ASIC_POWER));
+        let (power_w, reference) = if let Some(w) = pmlog.get(SENSOR_BOARD_POWER) {
+            (Some(w), dev.power.board_mw)
+        } else {
+            (pmlog.get(SENSOR_ASIC_POWER), dev.power.asic_mw)
+        };
+        info.pwr_max_usage = if power_w.is_some() { reference } else { 0 };
         if let Some(w) = power_w {
             let power_mw = w.max(0) as u64 * 1000;
             info.pwr_usage = power_mw as i64;
@@ -392,6 +439,11 @@ pub(super) fn discover() -> Option<AdlBundle> {
             (
                 DeviceState {
                     adapter_index: adapter.adapter_index,
+                    power: query_power_references(
+                        session.adl.sensor_limits,
+                        session.context,
+                        adapter.adapter_index,
+                    ),
                 },
                 info,
             )
@@ -481,22 +533,7 @@ fn build_initial_info(
         ..crate::domain::gpu::GpuInfo::default()
     };
 
-    // PMLog one-shot snapshot for the initial power-limit reference.
-    let mut pmlog = AdlPMLogDataOutput::zeroed();
-    // SAFETY: ctx and adapter.adapter_index are valid; pmlog is a
-    // valid pointer.
-    let ret = unsafe { (adl.query_pmlog_data_get)(ctx, adapter.adapter_index, &mut pmlog) };
-    if ret == ADL_OK {
-        let power_w = pmlog
-            .get(SENSOR_BOARD_POWER)
-            .or_else(|| pmlog.get(SENSOR_ASIC_POWER));
-        if let Some(w) = power_w {
-            // Sensor reports watts; domain stores milliwatts. Use
-            // the initial reading as a baseline — the meter rescales
-            // if power exceeds this on later samples.
-            gpu.pwr_max_usage = w.max(1) as i64 * 1000;
-        }
-    }
+    gpu.gpu_max_clock_speed = clock_reference(adl.observed_clocks, ctx, adapter.adapter_index);
 
     let mut mem = AdlMemoryInfoX4::zeroed();
     // SAFETY: ctx and adapter.adapter_index are valid; mem is a
@@ -510,10 +547,98 @@ fn build_initial_info(
     gpu
 }
 
+fn clock_reference(
+    query: Option<AdlObservedGameClockInfoGet>,
+    ctx: *mut c_void,
+    adapter: i32,
+) -> u32 {
+    let Some(query) = query else {
+        return 0;
+    };
+    let (mut base, mut game, mut boost, mut memory) = (0, 0, 0, 0);
+    // SAFETY: retained ADL context and discovered adapter; distinct writable SDK int outputs.
+    let result = unsafe { query(ctx, adapter, &mut base, &mut game, &mut boost, &mut memory) };
+    if result == ADL_OK && boost > 0 {
+        boost as u32
+    } else {
+        0
+    }
+}
+fn query_power_references(
+    query: Option<AdlSensorLimitsGet>,
+    ctx: *mut c_void,
+    adapter: i32,
+) -> PowerReferences {
+    let Some(query) = query else {
+        return PowerReferences::default();
+    };
+    let mut limits = AdlPMLogSensorLimits {
+        ranges: [[0; 2]; ADL_PMLOG_MAX_SENSORS],
+    };
+    // SAFETY: session context and adapter are valid; output has SDK's 256 signed min/max pairs.
+    let result = unsafe { query(ctx, adapter, &mut limits) };
+    if result != ADL_OK {
+        return PowerReferences::default();
+    }
+    PowerReferences {
+        board_mw: power_range_mw(limits.ranges[SENSOR_BOARD_POWER]),
+        asic_mw: power_range_mw(limits.ranges[SENSOR_ASIC_POWER]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::mem::{align_of, offset_of, size_of};
+    unsafe extern "C" fn fake_clock(
+        context: *mut c_void,
+        adapter: i32,
+        base: *mut i32,
+        game: *mut i32,
+        boost: *mut i32,
+        memory: *mut i32,
+    ) -> i32 {
+        assert!(context.is_null());
+        // SAFETY: clock_reference passes four valid, distinct i32 outputs.
+        unsafe {
+            *base = 1000;
+            *game = 2000;
+            *boost = match adapter {
+                1 => 0,
+                2 => -1,
+                _ => 3000,
+            };
+            *memory = 4000;
+        }
+        if adapter == 3 { -1 } else { ADL_OK }
+    }
+    #[test]
+    fn optional_clock_uses_boost_and_rejects_failure_or_nonpositive() {
+        assert_eq!(clock_reference(None, std::ptr::null_mut(), 0), 0);
+        assert_eq!(
+            clock_reference(Some(fake_clock), std::ptr::null_mut(), 0),
+            3000
+        );
+        for index in 1..=3 {
+            assert_eq!(
+                clock_reference(Some(fake_clock), std::ptr::null_mut(), index),
+                0
+            );
+        }
+        let power = query_power_references(None, std::ptr::null_mut(), 0);
+        assert_eq!((power.board_mw, power.asic_mw), (0, 0));
+    }
+
+    #[test]
+    fn sensor_limits_abi_and_conversion() {
+        assert_eq!(size_of::<AdlPMLogSensorLimits>(), 2048);
+        assert_eq!(align_of::<AdlPMLogSensorLimits>(), 4);
+        assert_eq!(power_range_mw([0, 334]), 334_000);
+        assert_eq!(power_range_mw([0, i32::MAX]), i64::from(i32::MAX) * 1000);
+        for range in [[0, 0], [-1, 334], [335, 334], [0, -1]] {
+            assert_eq!(power_range_mw(range), 0);
+        }
+    }
 
     #[test]
     fn memory_info_x4_matches_adl_sdk_layout() {

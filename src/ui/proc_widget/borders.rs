@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::draw::box_drawing;
 use crate::draw::buffer::AnsiBuffer;
 use crate::term;
@@ -56,7 +57,11 @@ pub(super) fn draw_top_border(p: &TopBorderParams, theme: &Theme) -> String {
     let mut pos = p.x + p.width - sort_name.len() - SORT_INSET_OVERHEAD;
 
     // Sort selector: ┐← sorting →┌
-    let sort_text = format!("← {title_color}{sort_name} {hi}→");
+    let sort_text = format!(
+        "{} {title_color}{sort_name} {}",
+        crate::draw::controls::button("←", crate::draw::controls::KEY_LEFT),
+        crate::draw::controls::button(&format!("{hi}→"), crate::draw::controls::KEY_RIGHT)
+    );
     let sort_inset = box_drawing::title_inset(&sort_text, border_color, hi, false);
     buf.mv(pos, p.y + 1).text(&sort_inset);
 
@@ -69,7 +74,8 @@ pub(super) fn draw_top_border(p: &TopBorderParams, theme: &Theme) -> String {
     let tree_vis = box_drawing::inset_width(&format!("tree{tree_star}"));
     if pos >= min_chip_left + tree_vis {
         pos -= tree_vis;
-        let tree_text = format!("tre{hi}e{title_color}{tree_star}");
+        let tree_text =
+            crate::draw::controls::button(&format!("tre{hi}e{title_color}{tree_star}"), 'e' as u32);
         let tree_inset = box_drawing::title_inset(&tree_text, border_color, title_color, false);
         buf.mv(pos, p.y + 1).text(&tree_inset);
     }
@@ -94,7 +100,10 @@ pub(super) fn draw_top_border(p: &TopBorderParams, theme: &Theme) -> String {
     // paused; when not paused the right-side chip positions stay
     // unchanged because they're computed from the right edge.
     if p.paused {
-        let pause_inset = box_drawing::title_inset("paused", border_color, hi, false);
+        let pause_inset = crate::draw::controls::button(
+            &box_drawing::title_inset("paused", border_color, hi, false),
+            32,
+        );
         let title_w = box_drawing::inset_width("\u{2074}proc"); // matches the title chip
         let pause_x = p.x + 3 + title_w;
         // Defensive: only render if there's room before the
@@ -145,9 +154,18 @@ pub(super) fn draw_bottom_border(p: &BottomBorderParams, theme: &Theme) -> Strin
         let prompt_inset = box_drawing::title_inset(&prompt, border_color, title_color, true);
         buf.mv(p.x + 3, p.bottom_y).text(&prompt_inset);
     } else {
-        let select_text = format!("↑{} select {}↓", title_color, hi);
+        let select_text = format!(
+            "{}{} select {}{}",
+            crate::draw::controls::button("↑", 506),
+            title_color,
+            hi,
+            crate::draw::controls::button("↓", 507)
+        );
         let select_inset = box_drawing::title_inset(&select_text, border_color, hi, true);
-        let info_text = format!("info {}↵", hi);
+        let info_text = crate::draw::controls::button(
+            &format!("info {}↵", hi),
+            crate::draw::controls::KEY_ENTER,
+        );
         let info_inset = box_drawing::title_inset(&info_text, border_color, title_color, true);
         // Dim the `terminate` chip when the cursor is on a dead row
         // in the paused snapshot — affordance hint that the action

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Per-key help text for the options menu's right-hand panel.
 //!
 //! This module is the single source of truth for that text, keeping
@@ -24,6 +25,22 @@ pub fn desc(key: ConfigKey) -> &'static [&'static str] {
             "The scale never falls below that allocation.",
             "Does not change Windows paging settings.",
             "Default: 0.",
+        ],
+        ConfigKey::Bool(BoolKey::MemorySortRam) => &[
+            "Sort Memory ranking by resident RAM.",
+            "Off sorts by private committed memory.",
+            "Click RAM or Commit in the ranking header.",
+            "Keyboard: M selects RAM, C selects Commit.",
+        ],
+        ConfigKey::Int(IntKey::CpuClockMaxMhz) => &[
+            "CPU Clock meter scale in MHz.",
+            "Zero uses the highest reading this session.",
+            "This is not the hardware boost limit.",
+        ],
+        ConfigKey::Int(IntKey::GpuClockMaxMhz) => &[
+            "GPU Clock meter scale in MHz.",
+            "Zero uses the driver's reference.",
+            "A positive override applies to all GPUs.",
         ],
         ConfigKey::Int(IntKey::GpuPowerMaxWatts) => &[
             "GPU power meter maximum, in watts.",
@@ -222,7 +239,7 @@ pub fn desc(key: ConfigKey) -> &'static [&'static str] {
             "Show CPU frequency.",
             "",
             "Adds the current CPU clock speed (in GHz)",
-            "next to the model name in the widget header.",
+            "as a meter below total CPU usage.",
             "",
             "Default: on.",
         ],
@@ -661,6 +678,8 @@ mod tests {
         "net_update_ms",
         "gpu_update_ms",
         "gpu_power_max_watts",
+        "gpu_clock_max_mhz",
+        "cpu_clock_max_mhz",
         "swap_max_mib",
         "proc_update_ms",
         "net_download",

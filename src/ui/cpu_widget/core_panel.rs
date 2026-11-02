@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Per-core grid panel rendering for the CPU widget.
 //!
 //! Owns the layout + render logic for the right-hand panel inside
@@ -8,7 +9,7 @@
 use crate::domain::config_enums::TempScale;
 use crate::domain::cpu::CpuInfo;
 use crate::draw::box_drawing;
-use crate::draw::box_drawing::symbols;
+
 use crate::draw::buffer::AnsiBuffer;
 use crate::draw::graph::{Graph, GraphMode};
 use crate::draw::meter::Meter;
@@ -36,6 +37,7 @@ pub(super) struct CorePanelParams {
     pub(super) cpu_max_watts: Option<f64>,
     pub(super) stats_rows: usize,
     pub(super) show_freq: bool,
+    pub(super) clock_max_mhz: i64,
 }
 
 /// Render the core panel: stats meters, section divider, per-core mini-graphs.
@@ -77,6 +79,33 @@ pub(super) fn draw_core_panel(
         row += 1;
     }
 
+    if params.show_freq {
+        let scale = if params.clock_max_mhz > 0 {
+            params.clock_max_mhz as u64
+        } else {
+            u64::from(cpu.peak_clock_mhz)
+        };
+        let pct = (u64::from(cpu.clock_mhz) * 100)
+            .checked_div(scale)
+            .unwrap_or(0)
+            .min(100) as i32;
+        let text = if cpu.clock_mhz == 0 {
+            "N/A"
+        } else {
+            &cpu.cpu_hz
+        };
+        buf.mv(content_x, panel.y + 1 + row)
+            .color(fg)
+            .text("Clock ")
+            .text(cpu_meter.render(pct))
+            .color(if cpu.clock_mhz == 0 {
+                theme.color(tc::INACTIVE_FG)
+            } else {
+                gradient_color(cpu_gradient, pct)
+            })
+            .text(&tools::rjust(text, STATS_VAL_W, true));
+        row += 1;
+    }
     if params.has_temp
         && let Some(pkg_data) = cpu.temp.first()
     {
@@ -94,21 +123,6 @@ pub(super) fn draw_core_panel(
                 STATS_VAL_W,
                 true,
             ));
-        row += 1;
-    }
-
-    {
-        let load1 = cpu.load_avg[0];
-        // load_avg is a 0.0–1.0 fraction of total CPU capacity
-        let load_pct = (load1 * 100.0).clamp(0.0, 100.0) as i32;
-        let load_meter = Meter::new(meter_w, cpu_gradient, meter_bg);
-        let load_val = format!("{:.2}", load1);
-        buf.mv(content_x, panel.y + 1 + row)
-            .color(fg)
-            .text("Load  ")
-            .text(load_meter.render(load_pct))
-            .color(gradient_color(cpu_gradient, load_pct))
-            .text(&tools::rjust(&load_val, STATS_VAL_W, true));
         row += 1;
     }
 
@@ -157,53 +171,14 @@ pub(super) fn draw_core_panel(
         row += 1;
     }
 
-    // Section divider: ├─┐Cores┌──────────┐5.05 GHz┌─┤
     let divider_y = panel.y + 1 + row;
-    {
-        let section = "Cores";
-        let width = panel.width.saturating_sub(1);
-        let left_vis = tools::ulen(section) + 2; // +2 for inset chars
-        let left_dashes = 1;
-
-        let hz_text = if params.show_freq && !cpu.cpu_hz.is_empty() {
-            cpu.cpu_hz.clone()
-        } else {
-            String::new()
-        };
-        let hz_vis = if hz_text.is_empty() {
-            0
-        } else {
-            tools::ulen(&hz_text) + 2 // +2 for inset chars
-        };
-
-        let mid_dashes = width.saturating_sub(left_dashes + left_vis + hz_vis + 1);
-        let mut divider = format!(
-            "{}{}{}{}{}{}{}{}{}",
+    buf.mv(panel.x + 1, divider_y)
+        .text(&box_drawing::section_divider(
+            "Cores",
+            panel.width.saturating_sub(3),
             border_color,
-            symbols::DIV_LEFT,
-            symbols::H_LINE.repeat(left_dashes),
-            box_drawing::title_syms::TITLE_LEFT,
             title_color,
-            section,
-            border_color,
-            box_drawing::title_syms::TITLE_RIGHT,
-            symbols::H_LINE.repeat(mid_dashes),
-        );
-        if !hz_text.is_empty() {
-            divider.push_str(&box_drawing::title_inset(
-                &hz_text,
-                border_color,
-                title_color,
-                false,
-            ));
-            divider.push_str(border_color);
-            divider.push_str(symbols::H_LINE);
-        }
-        divider.push_str(border_color);
-        divider.push_str(symbols::DIV_RIGHT);
-        buf.mv(panel.x + 1, divider_y).text(&divider);
-    }
-
+        ));
     let core_start_y = panel.y + 1 + params.stats_rows + 1; // stats + divider
 
     for (i, core_data) in cpu.core_percent.iter().enumerate() {

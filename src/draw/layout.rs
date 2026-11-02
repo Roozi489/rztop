@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Layout engine: turns a `LayoutConfig` (terminal size + hints + a
 //! [`Slot`] tree + a hidden-widgets [`WidgetSet`]) into per-widget
 //! rectangles in [`Layout`].
@@ -21,6 +22,7 @@
 //! step; the engine signature is unchanged.
 
 use crate::domain::layout_spec::{HStackChild, Slot};
+use crate::domain::resizing::{Axis, Divider, ResizeConfig, SplitTarget, allocate};
 use crate::domain::widget_kind::{PerWidget, WidgetKind, WidgetSizing};
 use crate::domain::widget_set::WidgetSet;
 
@@ -50,6 +52,8 @@ pub struct LayoutHints {
     pub has_swap: bool,
     pub has_cpu_temp: bool,
     pub has_cpu_watts: bool,
+    pub show_cpu_clock: bool,
+    pub proc_rankings: bool,
     /// Rows the disk widget reserves for each disk in the active
     /// view. The disk widget renders either 1 row per disk
     /// (capacity-only usage view, or combined IO graph) or 2 rows
@@ -103,6 +107,7 @@ pub struct LayoutHints {
 /// need to track per-device positions.
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
+    pub dividers: Vec<Divider>,
     dims: PerWidget<Option<WidgetDimensions>>,
 }
 
@@ -176,6 +181,10 @@ pub struct LayoutConfig {
 /// dimensions and config. Returns an empty layout on degenerate
 /// inputs (term smaller than 2x2).
 pub fn calc_sizes(cfg: &LayoutConfig) -> Layout {
+    calc_sizes_resized(cfg, None)
+}
+
+pub fn calc_sizes_resized(cfg: &LayoutConfig, resizing: Option<&ResizeConfig>) -> Layout {
     let mut layout = Layout::default();
     if cfg.term_width < 2 || cfg.term_height < 2 {
         return layout;
@@ -190,8 +199,9 @@ pub fn calc_sizes(cfg: &LayoutConfig) -> Layout {
         hints: &cfg.hints,
         hidden: &cfg.hidden,
         term_height: cfg.term_height,
+        resizing: resizing.filter(|r| r.layout == cfg.root.to_string()),
     };
-    place(&cfg.root, area, &ctx, &mut layout);
+    place(&cfg.root, area, &ctx, &mut layout, "root");
     layout
 }
 
@@ -237,6 +247,7 @@ struct PlaceCtx<'a> {
     hints: &'a LayoutHints,
     hidden: &'a WidgetSet,
     term_height: usize,
+    resizing: Option<&'a ResizeConfig>,
 }
 
 /// Context threaded through `slot_min_size` recursion. Needs hints
@@ -249,7 +260,88 @@ struct MinCtx<'a> {
     hidden: &'a WidgetSet,
 }
 
-fn place(slot: &Slot, area: Rect, ctx: &PlaceCtx, layout: &mut Layout) {
+fn adjust_stack(
+    slots: &[&Slot],
+    sizes: &mut Vec<usize>,
+    area: Rect,
+    ctx: &PlaceCtx,
+    location: (&str, Axis),
+    layout: &mut Layout,
+) {
+    let (path, axis) = location;
+    let minimums: Vec<usize> = slots
+        .iter()
+        .map(|slot| {
+            let (w, h) = slot_min_size(
+                slot,
+                &MinCtx {
+                    hints: ctx.hints,
+                    hidden: ctx.hidden,
+                },
+            );
+            match axis {
+                Axis::Horizontal => h,
+                Axis::Vertical => w,
+            }
+        })
+        .collect();
+    if let Some(weights) = ctx
+        .resizing
+        .and_then(|r| r.splits.get(path))
+        .filter(|w| w.len() == slots.len())
+    {
+        let mut weights = weights.clone();
+        let mut floors = minimums.clone();
+        let mut total = match axis {
+            Axis::Horizontal => area.height,
+            Axis::Vertical => area.width,
+        };
+        // A standalone statusbar child stays one row high regardless of saved weights.
+        let fixed = slots.iter().position(|slot| {
+            matches!(slot, Slot::Widget(WidgetKind::Statusbar)) && axis == Axis::Horizontal
+        });
+        if let Some(i) = fixed {
+            total = total.saturating_sub(minimums[i]);
+            floors[i] = 0;
+            weights[i] = 0;
+        }
+        *sizes = allocate(total, &weights, &floors);
+        if let Some(i) = fixed {
+            sizes[i] = minimums[i];
+        }
+    }
+    let visible: Vec<usize> = sizes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &s)| (s > 0).then_some(i))
+        .collect();
+    for pair in visible.windows(2) {
+        let (before, after) = (pair[0], pair[1]);
+        if matches!(slots[before], Slot::Widget(WidgetKind::Statusbar))
+            || matches!(slots[after], Slot::Widget(WidgetKind::Statusbar))
+        {
+            continue;
+        }
+        let offset = sizes[..=before].iter().sum::<usize>();
+        let (position, start, end) = match axis {
+            Axis::Horizontal => (area.y + offset, area.x + 1, area.x + area.width),
+            Axis::Vertical => (area.x + offset, area.y + 1, area.y + area.height),
+        };
+        layout.dividers.push(Divider {
+            target: SplitTarget::Stack(path.into()),
+            axis,
+            position,
+            start,
+            end,
+            before,
+            after,
+            sizes: sizes.clone(),
+            minimums: minimums.clone(),
+        });
+    }
+}
+
+fn place(slot: &Slot, area: Rect, ctx: &PlaceCtx, layout: &mut Layout, path: &str) {
     match slot {
         Slot::Widget(kind) => {
             if !widget_is_visible(*kind, ctx.hidden) {
@@ -274,9 +366,18 @@ fn place(slot: &Slot, area: Rect, ctx: &PlaceCtx, layout: &mut Layout) {
             );
         }
         Slot::VStack(children) => {
-            let heights = vstack_distribute_heights(children, ctx, area.height);
+            let mut heights = vstack_distribute_heights(children, ctx, area.height);
+            let slots: Vec<&Slot> = children.iter().collect();
+            adjust_stack(
+                &slots,
+                &mut heights,
+                area,
+                ctx,
+                (path, Axis::Horizontal),
+                layout,
+            );
             let mut y = area.y;
-            for (child, child_h) in children.iter().zip(heights.iter()) {
+            for (index, (child, child_h)) in children.iter().zip(heights.iter()).enumerate() {
                 place(
                     child,
                     Rect {
@@ -287,14 +388,24 @@ fn place(slot: &Slot, area: Rect, ctx: &PlaceCtx, layout: &mut Layout) {
                     },
                     ctx,
                     layout,
+                    &format!("{path}/{index}"),
                 );
                 y += child_h;
             }
         }
         Slot::HStack(children) => {
-            let widths = hstack_distribute_widths(children, ctx.hidden, area.width);
+            let mut widths = hstack_distribute_widths(children, ctx.hidden, area.width);
+            let slots: Vec<&Slot> = children.iter().map(|c| &c.slot).collect();
+            adjust_stack(
+                &slots,
+                &mut widths,
+                area,
+                ctx,
+                (path, Axis::Vertical),
+                layout,
+            );
             let mut x = area.x;
-            for (child, child_w) in children.iter().zip(widths.iter()) {
+            for (index, (child, child_w)) in children.iter().zip(widths.iter()).enumerate() {
                 place(
                     &child.slot,
                     Rect {
@@ -305,6 +416,7 @@ fn place(slot: &Slot, area: Rect, ctx: &PlaceCtx, layout: &mut Layout) {
                     },
                     ctx,
                     layout,
+                    &format!("{path}/{index}"),
                 );
                 x += child_w;
             }
@@ -526,6 +638,60 @@ fn widget_is_visible(kind: WidgetKind, hidden: &WidgetSet) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_resizing_uses_signature_and_keeps_statusbar_fixed() {
+        let root: Slot = "vstack(cpu,hstack(50:vstack(mem,net),50:proc),statusbar)"
+            .parse()
+            .unwrap();
+        let cfg = lc(120, 60, root);
+        let baseline = calc_sizes(&cfg);
+        let mut resizing = ResizeConfig {
+            layout: cfg.root.to_string(),
+            ..Default::default()
+        };
+        resizing.splits.insert("root".into(), vec![18, 41, 999]);
+        resizing.splits.insert("root/1".into(), vec![70, 50]);
+        let resized = calc_sizes_resized(&cfg, Some(&resizing));
+        let status = resized.dims_for(WidgetKind::Statusbar).unwrap();
+        assert_eq!((status.y, status.height), (59, 1));
+        let left = resized.dims_for(WidgetKind::Mem).unwrap();
+        let right = resized.dims_for(WidgetKind::Proc).unwrap();
+        assert_eq!((left.width, right.width, right.x), (70, 50, 70));
+        assert_eq!(resized.dims_for(WidgetKind::Cpu).unwrap().height, 18);
+        assert!(
+            resized
+                .dividers
+                .iter()
+                .filter(|d| d.axis == Axis::Horizontal)
+                .all(|d| d.position < 59)
+        );
+        resizing.layout = "different".into();
+        let ignored = calc_sizes_resized(&cfg, Some(&resizing));
+        for kind in WidgetKind::all() {
+            assert_eq!(ignored.dims_for(kind), baseline.dims_for(kind));
+        }
+    }
+
+    #[test]
+    fn hidden_children_get_no_saved_space_and_extreme_splits_respect_minima() {
+        let root: Slot = "hstack(30:mem,30:net,40:proc)".parse().unwrap();
+        let mut cfg = lc(160, 50, root);
+        cfg.hidden.insert(WidgetKind::Net);
+        let mut resizing = ResizeConfig {
+            layout: cfg.root.to_string(),
+            ..Default::default()
+        };
+        resizing
+            .splits
+            .insert("root".into(), vec![1, u64::MAX, 999]);
+        let layout = calc_sizes_resized(&cfg, Some(&resizing));
+        assert!(layout.dims_for(WidgetKind::Net).is_none());
+        let mem = layout.dims_for(WidgetKind::Mem).unwrap();
+        let proc = layout.dims_for(WidgetKind::Proc).unwrap();
+        assert_eq!(mem.width + proc.width, 160);
+        assert_eq!(proc.x, mem.width);
+        assert!(mem.width >= widget_min_width(WidgetKind::Mem, &cfg.hints, &cfg.hidden));
+    }
     use std::num::NonZeroU8;
 
     fn nz(n: u8) -> NonZeroU8 {

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Typed modal and overlay state, dispatch discriminators, and
 //! rendering entry points.
 //!
@@ -146,7 +147,7 @@ mod tests {
             OverlayKind::Options,
         );
         assert_eq!(
-            ActiveModal::Filter(filter::FilterState).kind(),
+            ActiveModal::Filter(filter::FilterState::default()).kind(),
             OverlayKind::Filter,
         );
     }
@@ -162,7 +163,7 @@ mod tests {
     #[test]
     fn dims_underlay_only_for_centered_modals() {
         assert!(!ActiveModal::None.dims_underlay());
-        assert!(!ActiveModal::Filter(filter::FilterState).dims_underlay());
+        assert!(!ActiveModal::Filter(filter::FilterState::default()).dims_underlay());
         assert!(ActiveModal::Main(main_menu::MainMenuState::new()).dims_underlay());
         assert!(ActiveModal::Help(help::HelpState::new(ReturnTarget::Normal)).dims_underlay());
         assert!(

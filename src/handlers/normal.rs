@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Per-action handlers for "normal" (no-overlay) mode and the
 //! Win32 helpers shared by them.
 //!
@@ -191,6 +192,11 @@ pub(super) fn open_filter_action(ctx: &mut InputContext, _: &Key) {
 pub(super) fn toggle_tree_action(ctx: &mut InputContext, _: &Key) {
     ctx.view.proc_tree = !ctx.view.proc_tree;
     ctx.render.dirty.mark_proc_data_changed();
+}
+
+pub(super) fn memory_sort_action(ctx: &mut InputContext, key: &Key) {
+    ctx.config.proc.memory_sort_ram = *key == Key::Char('M');
+    ctx.render.dirty.mark_proc_widget();
 }
 
 pub(super) fn toggle_reverse_action(ctx: &mut InputContext, _: &Key) {

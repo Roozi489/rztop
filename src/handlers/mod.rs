@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 pub(crate) mod keybinds;
 pub(crate) mod normal;
 
@@ -90,7 +91,9 @@ impl InputContext<'_> {
     /// the proc widget, so this marks the proc widget dirty rather
     /// than the overlay layer.
     pub(crate) fn open_filter(&mut self) {
-        self.overlay.active = ActiveModal::Filter(FilterState);
+        self.overlay.active = ActiveModal::Filter(FilterState {
+            original: self.view.proc_filter.clone(),
+        });
         self.render.dirty.mark_proc_widget();
     }
 
@@ -224,7 +227,7 @@ mod tests {
 
     #[test]
     fn close_filter_marks_was_filter_true() {
-        let active = ActiveModal::Filter(crate::overlay::filter::FilterState);
+        let active = ActiveModal::Filter(crate::overlay::filter::FilterState::default());
         assert_eq!(
             close_outcome(&active),
             CloseOutcome::ToNone { was_filter: true }

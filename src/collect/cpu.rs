@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::collect::cpu_thermal::ThermalCollector;
 use crate::domain::cpu::CpuInfo;
 use std::collections::VecDeque;
@@ -291,6 +292,8 @@ impl CpuCollector {
             && perf > 0.0
         {
             let actual_mhz = (freq * perf / 100.0).clamp(0.0, u32::MAX as f64) as u32;
+            self.info.clock_mhz = actual_mhz;
+            self.info.peak_clock_mhz = self.info.peak_clock_mhz.max(actual_mhz);
             if actual_mhz >= 1000 {
                 self.info.cpu_hz = format!("{:.2} GHz", actual_mhz as f64 / 1000.0);
             } else {
@@ -304,6 +307,8 @@ impl CpuCollector {
 
     fn collect_frequency_fallback(&mut self) {
         // Registry fallback reports base frequency.
+        self.info.clock_mhz = 0;
+        self.info.cpu_hz.clear();
         use windows::Win32::System::Registry::*;
         use windows::core::*;
 
@@ -334,6 +339,8 @@ impl CpuCollector {
                     && value_type == REG_DWORD
                     && size as usize == std::mem::size_of::<u32>()
                 {
+                    self.info.clock_mhz = mhz;
+                    self.info.peak_clock_mhz = self.info.peak_clock_mhz.max(mhz);
                     if mhz >= 1000 {
                         self.info.cpu_hz = format!("{:.2} GHz", mhz as f64 / 1000.0);
                     } else {

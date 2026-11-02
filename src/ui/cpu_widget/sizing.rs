@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Sizing helpers for the CPU widget.
 //!
 //! Holds the per-widget intrinsic-size policy (preferred height,
@@ -29,8 +30,8 @@ pub(super) const CORE_COL_GAP: usize = 1;
 pub(super) const CPU_STRUCTURAL_OVERHEAD: usize = 5;
 
 /// Count how many stats rows will be rendered for a given data state.
-pub(super) fn stats_row_count(has_temp: bool, has_watts: bool) -> usize {
-    let mut n = 2; // CPU + Load (always)
+pub(super) fn stats_row_count(has_temp: bool, has_watts: bool, show_clock: bool) -> usize {
+    let mut n = 1 + usize::from(show_clock); // CPU + optional Clock
     if has_temp {
         n += 1;
     }
@@ -50,7 +51,11 @@ pub(super) fn stats_row_count(has_temp: bool, has_watts: bool) -> usize {
 /// `core_grid_shape` or `stats_row_count`.
 pub fn preferred_height(hints: &crate::draw::layout::LayoutHints) -> usize {
     let (core_rows, _) = core_grid_shape(hints.core_count);
-    let stats_rows = stats_row_count(hints.has_cpu_temp, hints.has_cpu_watts);
+    let stats_rows = stats_row_count(
+        hints.has_cpu_temp,
+        hints.has_cpu_watts,
+        hints.show_cpu_clock,
+    );
     let panel_overhead = stats_rows + 1; // section divider
     core_rows + panel_overhead + 2 // + top/bottom borders
 }

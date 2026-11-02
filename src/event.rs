@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::input;
 use std::fmt;
 
@@ -155,6 +156,7 @@ impl<T> PerSubsystem<T> {
 /// on the receiver, processes events, and renders dirty widgets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppEvent {
+    Mouse(crossterm::event::MouseEvent),
     /// A key was pressed (from input thread).
     Key(input::Key),
     /// Terminal was resized (from input thread).

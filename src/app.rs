@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Application event loop and per-keystroke dispatch.
 //!
 //! The `app` module owns the orchestration of the running program:
@@ -17,6 +18,7 @@
 
 mod dirty_exec;
 mod lifecycle;
+mod mouse;
 mod pull;
 mod render_gates;
 mod state;
@@ -60,6 +62,8 @@ pub fn run(config: &mut config::Config, terminal: &mut term::Terminal, theme: &m
     let mut manager = runner::CollectorManager::start(&config.refresh, event_tx.clone());
     lifecycle::spawn_input_thread(event_tx);
     let mut state = AppState::new(config);
+    let mut persistence = lifecycle::SettingsPersistence::new(config);
+    let mut mouse = mouse::MouseState::default();
     tracing::info!(subsystem = %crate::log::Subsystem::Startup, "ready");
 
     let mut ready = PerSubsystem::<bool>::with_default();
@@ -70,22 +74,24 @@ pub fn run(config: &mut config::Config, terminal: &mut term::Terminal, theme: &m
         // cycle's events so flags reflect only subsystems that
         // signaled `SubsystemReady` during this iteration.
         ready.reset();
-        let mut keys: Vec<input::Key> = Vec::new();
+        let mut keys: Vec<AppEvent> = Vec::new();
         match first {
             AppEvent::Resize => {}
             AppEvent::SubsystemReady(kind) => *ready.get_mut(kind) = true,
-            AppEvent::Key(k) => keys.push(k),
+            event @ (AppEvent::Key(_) | AppEvent::Mouse(_)) => keys.push(event),
         }
         for event in std::iter::from_fn(|| event_rx.try_recv().ok()) {
             match event {
                 AppEvent::Resize => has_resize = true,
                 AppEvent::SubsystemReady(kind) => *ready.get_mut(kind) = true,
-                AppEvent::Key(k) => keys.push(k),
+                event @ (AppEvent::Key(_) | AppEvent::Mouse(_)) => keys.push(event),
             }
         }
 
         // Process resize before keys — keys may draw overlays that need current dimensions.
         if has_resize {
+            mouse.cancel(config, &mut state);
+            terminal.controls.borrow_mut().invalidate();
             let changed = terminal.refresh();
             if changed {
                 let (w, h) = terminal.size();
@@ -103,6 +109,10 @@ pub fn run(config: &mut config::Config, terminal: &mut term::Terminal, theme: &m
         // Always consume slot data into LiveData regardless of overlay state.
         let render_ui = config.ui.background_update || state.overlay.render_ui();
         pull::pull_subsystem_data(&mut state, config, &manager, render_ui, &ready);
+        mouse.reconcile(config, &mut state);
+        if state.render.dirty.needs_layout() {
+            terminal.controls.borrow_mut().invalidate();
+        }
 
         // Required terminal size for the active layout, derived per
         // frame from the active widget set + hardware-derived hints
@@ -120,7 +130,10 @@ pub fn run(config: &mut config::Config, terminal: &mut term::Terminal, theme: &m
             render_gates::render_if_dirty_small(
                 &mut state, config, terminal, theme, size, min_size,
             );
-            if keys.contains(&input::Key::Char('q')) {
+            if keys
+                .iter()
+                .any(|event| matches!(event, AppEvent::Key(input::Key::Char('q'))))
+            {
                 break;
             }
             continue;
@@ -129,20 +142,36 @@ pub fn run(config: &mut config::Config, terminal: &mut term::Terminal, theme: &m
         // Handle waiting for first data: render message, only accept quit.
         if !state.live.is_ready() {
             render_gates::render_if_dirty_waiting(&mut state, config, terminal, theme, size);
-            if keys.contains(&input::Key::Char('q')) {
+            if keys
+                .iter()
+                .any(|event| matches!(event, AppEvent::Key(input::Key::Char('q'))))
+            {
                 break;
             }
             continue;
         }
 
-        for key in &keys {
-            if handle_input_key(key, &mut state, config, terminal, theme, &manager, size)
-                == AppCommand::Quit
-            {
+        for event in &keys {
+            let key = match event {
+                AppEvent::Key(key) => {
+                    mouse.cancel(config, &mut state);
+                    terminal.controls.borrow_mut().invalidate();
+                    Some(*key)
+                }
+                AppEvent::Mouse(event) => mouse.handle(*event, config, &mut state, terminal),
+                _ => None,
+            };
+            if key.is_some_and(|key| {
+                handle_input_key(&key, &mut state, config, terminal, theme, &manager, size)
+                    == AppCommand::Quit
+            }) {
                 tracing::info!(subsystem = %crate::log::Subsystem::Startup, "exiting");
                 manager.shutdown();
-                lifecycle::save_config_on_exit(config, &state);
+                persistence.save(config, &state);
                 return;
+            }
+            if !mouse.dragging() {
+                persistence.save(config, &state);
             }
         }
 
@@ -176,7 +205,7 @@ pub fn run(config: &mut config::Config, terminal: &mut term::Terminal, theme: &m
 
     tracing::info!(subsystem = %crate::log::Subsystem::Startup, "exiting");
     manager.shutdown();
-    lifecycle::save_config_on_exit(config, &state);
+    persistence.save(config, &state);
 }
 
 fn terminal_size(terminal: &term::Terminal) -> TerminalSize {

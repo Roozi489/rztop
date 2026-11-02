@@ -39,8 +39,8 @@ jobs:
       - name: Zip executable
         shell: pwsh
         run: |
-          $exePath = "target\x86_64-pc-windows-msvc\release\rtop.exe"
-          Compress-Archive -Path $exePath -DestinationPath "rtop-${{ steps.get_version.outputs.version }}.zip"
+          $exePath = "target\x86_64-pc-windows-msvc\release\rztop.exe"
+          Compress-Archive -Path $exePath -DestinationPath "rztop-${{ steps.get_version.outputs.version }}.zip"
       - name: Generate changelog
         id: changelog
         shell: pwsh
@@ -61,6 +61,6 @@ jobs:
           tag_name: v${{ steps.get_version.outputs.version }}
           name: Release v${{ steps.get_version.outputs.version }}
           body: ${{ steps.changelog.outputs.changelog }}
-          files: rtop-${{ steps.get_version.outputs.version }}.zip
+          files: rztop-${{ steps.get_version.outputs.version }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

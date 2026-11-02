@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 mod borders;
 mod detail;
 mod layout;
@@ -34,6 +35,8 @@ pub(super) const STATE_GRADIENT_EXITED: i32 = 100;
 
 /// Process widget per-frame view passed to [`draw`].
 pub struct ProcFrame {
+    pub memory_sort_ram: bool,
+    pub ranking_weights: [u64; 5],
     pub proc_per_core: bool,
     pub core_count: usize,
     pub proc_mem_bytes: bool,
@@ -379,19 +382,23 @@ impl super::Widget for ProcWidget {
         KINDS
     }
 
-    fn preferred_height(&self, _: &crate::draw::layout::LayoutHints) -> usize {
+    fn preferred_height(&self, hints: &crate::draw::layout::LayoutHints) -> usize {
         // Proc is a Fill widget — preferred is its absolute
         // minimum; the container distributes slack from sibling
         // Preferred widgets.
-        crate::draw::layout::MIN_PROC_HEIGHT
+        self.min_height(hints)
     }
 
     fn min_width(&self, _: &crate::draw::layout::LayoutHints) -> usize {
         crate::draw::layout::MIN_PROC_WIDTH
     }
 
-    fn min_height(&self, _: &crate::draw::layout::LayoutHints) -> usize {
-        crate::draw::layout::MIN_PROC_HEIGHT
+    fn min_height(&self, hints: &crate::draw::layout::LayoutHints) -> usize {
+        if hints.proc_rankings {
+            25
+        } else {
+            crate::draw::layout::MIN_PROC_HEIGHT
+        }
     }
 
     fn render(&self, params: &crate::app::RenderParams<'_>, output: &mut String) {
@@ -436,6 +443,8 @@ impl super::Widget for ProcWidget {
             selected_pid: selected_pid_from(entries, params.proc_selected, procs),
         };
         let frame = ProcFrame {
+            memory_sort_ram: params.config.proc.memory_sort_ram,
+            ranking_weights: params.config.resizing.ranking_weights(),
             proc_per_core: params.view.proc_per_core,
             core_count: params.core_count,
             proc_mem_bytes: params.config.proc.proc_mem_bytes,
@@ -522,6 +531,7 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                io_rates: None,
                 ram: 0,
                 gpu_p: None,
                 gpu_mem: None,
@@ -540,6 +550,7 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                io_rates: None,
                 ram: 0,
                 gpu_p: None,
                 gpu_mem: None,
@@ -558,6 +569,7 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                io_rates: None,
                 ram: 0,
                 gpu_p: None,
                 gpu_mem: None,
@@ -591,6 +603,7 @@ mod tests {
                 cpu_time: 0,
                 io_read: 0,
                 io_write: 0,
+                io_rates: None,
                 ram: 0,
                 gpu_p: None,
                 gpu_mem: None,
@@ -631,6 +644,8 @@ mod tests {
 
     pub(super) fn make_frame() -> ProcFrame {
         ProcFrame {
+            ranking_weights: [1; 5],
+            memory_sort_ram: false,
             proc_per_core: true,
             core_count: 4,
             proc_mem_bytes: true,
@@ -844,6 +859,8 @@ mod tests {
             &make_area(),
             &Theme::default(),
             &ProcFrame {
+                ranking_weights: [1; 5],
+                memory_sort_ram: false,
                 proc_per_core: false,
                 core_count: 4,
                 ..make_frame()

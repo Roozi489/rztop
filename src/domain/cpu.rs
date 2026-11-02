@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use std::collections::VecDeque;
 
 use crate::domain::config_enums::CpuGraphSource;
@@ -38,6 +39,10 @@ pub struct CpuInfo {
     pub cpu_name: String,
     /// Current CPU frequency as display string (e.g. "5.80 GHz").
     pub cpu_hz: String,
+    /// Current estimated MHz (registry base frequency if PDH is unavailable).
+    pub clock_mhz: u32,
+    /// Largest valid reading this session, not a hardware boost limit.
+    pub peak_clock_mhz: u32,
     pub core_count: usize,
     /// Temperature history: index 0 = package, 1+ = per-core.
     pub temp: Vec<VecDeque<i64>>,
@@ -55,6 +60,8 @@ impl Default for CpuInfo {
             load_avg: [0.0; 3],
             cpu_name: String::new(),
             cpu_hz: String::new(),
+            clock_mhz: 0,
+            peak_clock_mhz: 0,
             core_count: 0,
             temp: Vec::new(),
             cpu_watts: None,

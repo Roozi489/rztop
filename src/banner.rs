@@ -3,13 +3,14 @@ use crate::theme::Theme;
 use crate::theme_keys as tc;
 
 /// ASCII art banner lines for the rtop splash/menu screen.
+// Modified for rztop on 2026-11-02: compact fork banner, same width budget.
 pub const BANNER: &[&str] = &[
-    "██████╗ ████████╗ ██████╗ ██████╗ ",
-    "██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗",
-    "██████╔╝   ██║   ██║   ██║██████╔╝",
-    "██╔══██╗   ██║   ██║   ██║██╔═══╝ ",
-    "██║  ██║   ██║   ╚██████╔╝██║     ",
-    "╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ",
+    "████  █████ █████  ███  ████ ",
+    "█   █    █    █   █   █ █   █",
+    "████    █     █   █   █ ████ ",
+    "█ █    █      █   █   █ █    ",
+    "█  █  █       █   █   █ █    ",
+    "█   █ █████   █    ███  █    ",
 ];
 
 /// Build a 6-step brightness gradient from an RGB color.
@@ -111,7 +112,7 @@ mod tests {
         let theme = Theme::new();
         let out = generate(0, 0, &theme);
         assert!(out.contains("\x1b[1;1H"));
-        assert!(out.contains("██████╗"));
+        assert!(out.contains("████"));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Typed `ConfigKey` schema and per-key dispatch.
 //!
 //! Per-kind sub-enums (`BoolKey`, `IntKey`, `EnumKey`, `StringKey`)
@@ -247,6 +248,7 @@ config_schema! {
         ProcTree => "proc_tree" => view.proc_tree,
         ProcColors => "proc_colors" => proc.proc_colors,
         ProcRankings => "proc_rankings" => proc.proc_rankings,
+        MemorySortRam => "memory_sort_ram" => proc.memory_sort_ram,
         ProcPerCore => "proc_per_core" => view.proc_per_core,
         ProcMemBytes => "proc_mem_bytes" => proc.proc_mem_bytes,
         ProcAggregate => "proc_aggregate" => proc.proc_aggregate,
@@ -285,6 +287,8 @@ config_schema! {
         GpuUpdateMs => "gpu_update_ms" => { field refresh.gpu_update_ms },
         SwapMaxMib => "swap_max_mib" => { field mem.swap_max_mib },
         GpuPowerMaxWatts => "gpu_power_max_watts" => { field gpu.gpu_power_max_watts },
+        GpuClockMaxMhz => "gpu_clock_max_mhz" => { field gpu.gpu_clock_max_mhz },
+        CpuClockMaxMhz => "cpu_clock_max_mhz" => { field cpu.cpu_clock_max_mhz },
         ProcUpdateMs => "proc_update_ms" => { field refresh.proc_update_ms },
         NetDownload => "net_download" => { field net.net_download },
         NetUpload => "net_upload" => { field net.net_upload },
@@ -327,6 +331,7 @@ impl IntKey {
             | Self::GpuUpdateMs
             | Self::ProcUpdateMs => 100,
             Self::NetDownload | Self::NetUpload | Self::GpuPowerMaxWatts | Self::SwapMaxMib => 1,
+            Self::GpuClockMaxMhz | Self::CpuClockMaxMhz => 100,
         }
     }
 
@@ -346,6 +351,7 @@ impl IntKey {
             | Self::ProcUpdateMs => 0..=86_400_000,
             Self::NetDownload | Self::NetUpload => 0..=10_000_000,
             Self::GpuPowerMaxWatts => 0..=10_000,
+            Self::GpuClockMaxMhz | Self::CpuClockMaxMhz => 0..=10_000,
             Self::SwapMaxMib => 0..=1_000_000_000,
         }
     }
@@ -387,6 +393,7 @@ impl IntKey {
             Self::NetDownload | Self::NetUpload => "must be 0..10000000 KiB/s",
             Self::SwapMaxMib => "must be 0..1000000000 MiB (0=current allocation)",
             Self::GpuPowerMaxWatts => "must be 0..10000 W (0=automatic)",
+            Self::GpuClockMaxMhz | Self::CpuClockMaxMhz => "must be 0..10000 MHz (0=automatic)",
         }
     }
 }

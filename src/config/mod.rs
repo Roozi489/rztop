@@ -163,6 +163,7 @@ impl CachedLayoutSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub resizing: crate::domain::resizing::ResizeConfig,
     #[serde(flatten)]
     pub ui: UiConfig,
     #[serde(flatten)]
@@ -222,6 +223,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            resizing: crate::domain::resizing::ResizeConfig::default(),
             ui: UiConfig::default(),
             refresh: RefreshConfig::default(),
             cpu: CpuConfig::default(),
@@ -260,6 +262,17 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Modified for rztop on 2026-11-02: preserve the selected startup path on every save.
+    pub fn save_path(&self) -> PathBuf {
+        self.conf_file
+            .clone()
+            .unwrap_or_else(|| crate::tools::config_dir().join("rztop.toml"))
+    }
+
+    pub fn set_save_path(&mut self, path: PathBuf) {
+        self.conf_file = Some(path);
+    }
+
     /// Create a default config.
     pub fn new() -> Self {
         Self::default()

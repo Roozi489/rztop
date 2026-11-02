@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Statusbar widget renderer.
 //!
 //! A borderless 1-row widget rendered as part of the slot tree
@@ -47,6 +48,7 @@ use super::WidgetArea;
 /// All values come from `RenderParams`; widths come pre-computed
 /// on `LayoutHints` so the widget never re-derives them.
 pub struct StatusbarFrame<'a> {
+    pub self_cpu: &'a str,
     pub show_menu: bool,
     pub show_preset: bool,
     pub show_update_interval: bool,
@@ -176,6 +178,14 @@ pub fn draw(area: &WidgetArea, theme: &Theme, frame: &StatusbarFrame) -> String 
         let compact = StatusbarFrame { ping: "", ..*frame };
         (right_text, right_visible_width) = render_right(&compact, &bg, fg, sep);
     }
+    if LEFT_PAD + left_visible_width + 1 + right_visible_width + RIGHT_PAD > area.width {
+        let compact = StatusbarFrame {
+            ping: "",
+            self_cpu: "",
+            ..*frame
+        };
+        (right_text, right_visible_width) = render_right(&compact, &bg, fg, sep);
+    }
     if right_visible_width > 0 && right_visible_width + RIGHT_PAD <= area.width {
         let right_x = start_x + area.width - right_visible_width - RIGHT_PAD;
         buf.mv(right_x, row).text(&bg).text(fg).text(&right_text);
@@ -240,6 +250,9 @@ fn render_right(frame: &StatusbarFrame, bg: &str, fg: &str, sep: &str) -> (Strin
         if w > 0 {
             items.push((label, w));
         }
+        if !frame.self_cpu.is_empty() {
+            items.push((frame.self_cpu.into(), tools::ulen(frame.self_cpu)));
+        }
     }
     if frame.show_clock {
         let label = tools::format_clock(frame.clock_format);
@@ -294,16 +307,16 @@ fn format_menu_item(fg: &str, hi: &str) -> String {
     // the CPU widget's previous `keybind_inset` contract; the
     // 'm' key opens the main menu (see
     // `handlers/normal.rs::open_main_menu_action`).
-    format!("{hi}m{fg}enu")
+    crate::draw::controls::button(&format!("{hi}m{fg}enu"), 'm' as u32)
 }
 
 fn format_preset_item(preset_name: &str, filter_active: bool, fg: &str, hi: &str) -> String {
     let suffix = if filter_active { "*" } else { "" };
     // `← P NAME[*] p →` — keybind letters in HI, rest in FG.
     format!(
-        "{fg}{} {hi}P{fg} {preset_name}{suffix} {hi}p{fg} {}",
-        symbols::LEFT_ARROW,
-        symbols::RIGHT_ARROW,
+        "{} {fg}{preset_name}{suffix} {}",
+        crate::draw::controls::button(&format!("{fg}← {hi}P"), 'P' as u32),
+        crate::draw::controls::button(&format!("{hi}p{fg} →"), 'p' as u32)
     )
 }
 
@@ -312,7 +325,11 @@ fn format_update_item(update_ms: u64, fg: &str, hi: &str) -> String {
     // `handlers/normal.rs`); both render in HI and the label stays
     // FG. The borderless statusbar uses literal ASCII `-` / `+`,
     // not the CPU-widget inset's U+2500 box-drawing glyph.
-    format!("{hi}-{fg} {update_ms}ms {hi}+{fg}")
+    format!(
+        "{} {fg}{update_ms}ms {}{fg}",
+        crate::draw::controls::button(&format!("{hi}-{fg}"), '-' as u32),
+        crate::draw::controls::button(&format!("{hi}+{fg}"), '+' as u32)
+    )
 }
 
 pub struct StatusbarWidget;
@@ -389,7 +406,12 @@ impl super::Widget for StatusbarWidget {
         };
         let area = super::WidgetArea::from_dim(dim, params.rounded);
         let uptime_seconds = params.statusbar.map_or(0, |s| s.info.uptime_seconds);
+        let self_cpu = params
+            .proc_data
+            .and_then(|snapshot| snapshot.procs.iter().find(|p| p.pid == std::process::id()))
+            .map_or_else(|| "rztop N/A".into(), |p| format!("rztop {:.1}%", p.cpu_p));
         let frame = StatusbarFrame {
+            self_cpu: &self_cpu,
             show_menu: params.config.statusbar.statusbar_show_menu,
             show_preset: params.config.statusbar.statusbar_show_preset,
             show_update_interval: params.config.statusbar.statusbar_show_update_interval,
@@ -422,6 +444,24 @@ mod tests {
     use super::*;
     use crate::draw::layout::LayoutHints;
     use crate::theme::Theme;
+    #[test]
+    fn self_cpu_sits_next_to_uptime_and_drops_before_controls_overlap() {
+        let mut frame = full_frame();
+        frame.self_cpu = "rztop 1.2%";
+        let theme = Theme::default();
+        let area = WidgetArea {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 1,
+            rounded: false,
+        };
+        let output = strip_ansi(&draw(&area, &theme, &frame));
+        assert!(output.find("up ").unwrap() < output.find("rztop 1.2%").unwrap());
+        let output = strip_ansi(&draw(&WidgetArea { width: 55, ..area }, &theme, &frame));
+        assert!(!output.contains("rztop 1.2%"));
+        assert!(output.contains("menu"));
+    }
 
     fn full_hints() -> LayoutHints {
         LayoutHints {
@@ -450,6 +490,7 @@ mod tests {
 
     fn full_frame<'a>() -> StatusbarFrame<'a> {
         StatusbarFrame {
+            self_cpu: "",
             show_menu: true,
             show_preset: true,
             show_update_interval: true,
@@ -645,7 +686,7 @@ mod tests {
         let hi = theme.color(tc::STATUSBAR_HI);
         let fg = theme.color(tc::STATUSBAR_FG);
         // `<HI>m<FG>enu` is the contract.
-        let expected = format!("{hi}m{fg}enu");
+        let expected = crate::draw::controls::button(&format!("{hi}m{fg}enu"), 'm' as u32);
         assert!(
             raw.contains(&expected),
             "menu must render `m` in HI then `enu` in FG; got: {raw:?}",
@@ -661,6 +702,7 @@ mod tests {
         // CPU-widget border inset used.
         let theme = Theme::new();
         let raw = draw(&area(80), &theme, &full_frame());
+        let raw = crate::draw::controls::Screen::default().output(&raw);
         let hi = theme.color(tc::STATUSBAR_HI);
         let fg = theme.color(tc::STATUSBAR_FG);
         let expected_minus = format!("{hi}-{fg}");

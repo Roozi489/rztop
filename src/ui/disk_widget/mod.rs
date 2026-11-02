@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::collect::CollectStatus;
 use crate::domain::disk::DiskInfo;
 use crate::draw::box_drawing;
@@ -107,7 +108,7 @@ pub fn draw(
     // convention matches the `sync*` / `auto*` / `tree*` /
     // `reverse*` chips on the other widgets.
     let star = if io_view { "*" } else { "" };
-    let io_text = format!("{hi}i{title_color}o{star}");
+    let io_text = crate::draw::controls::button(&format!("{hi}i{title_color}o{star}"), 'i' as u32);
     let io_inset = box_drawing::title_inset(&io_text, border_color, title_color, true);
     buf.mv(x + 3, y + height).text(&io_inset);
 

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Drain ready collector slots into [`AppState::live`] and mark
 //! the corresponding widgets dirty.
 //!
@@ -107,6 +108,9 @@ pub(crate) fn pull_subsystem_data(
             }
             SubsystemKind::Proc => {
                 if let Some(snap) = manager.proc_slot.latest() {
+                    if render_ui {
+                        state.render.dirty.mark_widget(WidgetKind::Statusbar);
+                    }
                     if state.process.pause.is_some() {
                         // Paused: refresh dead_pids from this live
                         // update so the dead-row styling stays

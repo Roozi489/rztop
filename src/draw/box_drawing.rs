@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::draw::buffer::AnsiBuffer;
 use crate::term;
 
@@ -138,7 +139,15 @@ pub fn create_box(cfg: &BoxConfig) -> String {
             cfg.title_color
         };
         buf.mv(x + 3, y + 1).text(title_syms::TITLE_LEFT);
-        buf.text(&format!("{}{}{}{}{}", term::BOLD, hi, numbering, tc, title,));
+        let label = format!("{}{}{}{}{}", term::BOLD, hi, numbering, tc, title);
+        if num > 0 {
+            buf.text(&crate::draw::controls::button(
+                &label,
+                u32::from(b'0' + num),
+            ));
+        } else {
+            buf.text(&label);
+        }
         buf.text(term::BOLD_OFF);
         buf.color(color).text(title_syms::TITLE_RIGHT);
     }
@@ -198,9 +207,10 @@ pub fn keybind_inset(
     let mut chars = text.chars();
     let first = chars.next().unwrap_or(' ');
     let rest: String = chars.collect();
+    let content = format!("{hi_color}{first}{text_color}{rest}");
     format!(
-        "{}{}{}{}{}{}{}{}",
-        border_color, left, hi_color, first, text_color, rest, border_color, right
+        "{border_color}{left}{}{border_color}{right}",
+        crate::draw::controls::button(&content, first as u32)
     )
 }
 

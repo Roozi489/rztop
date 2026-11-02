@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! The single source of truth for every keybind in the application.
 //!
 //! Adding a binding here automatically:
@@ -225,6 +226,12 @@ pub(crate) static BINDINGS: &[Binding] = &[
         states: NORMAL,
         help: Some(HelpEntry { category: "Process", keys: "r", description: "Toggle reverse sort" }),
         action: normal::toggle_reverse_action,
+    },
+    Binding {
+        keys: &[KeySpec::Always(Key::Char('M')), KeySpec::Always(Key::Char('C'))],
+        states: NORMAL,
+        help: Some(HelpEntry { category: "Process", keys: "M / C", description: "Memory ranking: RAM / Commit" }),
+        action: normal::memory_sort_action,
     },
     Binding {
         keys: &[KeySpec::Always(Key::Char('f')), KeySpec::Always(Key::Char('/'))],

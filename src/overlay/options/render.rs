@@ -1,6 +1,11 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::app::TerminalSize;
 use crate::config::{BoolKey, Config, ConfigKey, EnumKey, IntKey, KeyKind, StringKey};
 use crate::draw::box_drawing::{self, symbols};
+use crate::draw::controls::{
+    KEY_ENTER, KEY_LEFT, KEY_PAGEDOWN, KEY_PAGEUP, KEY_RIGHT, MODAL, OPTION_NAME, OPTION_TAB,
+    OPTION_VALUE, button,
+};
 use crate::term;
 use crate::theme::Theme;
 use crate::theme_keys as tc;
@@ -191,6 +196,7 @@ pub const CPU: &[ConfigKey] = &[
     ConfigKey::Bool(BoolKey::ShowCoretemp),
     ConfigKey::Enum(EnumKey::TempScale),
     ConfigKey::Bool(BoolKey::ShowCpuFreq),
+    ConfigKey::Int(IntKey::CpuClockMaxMhz),
     ConfigKey::String(StringKey::CustomCpuName),
     ConfigKey::Bool(BoolKey::ShowCpuWatts),
     ConfigKey::Int(IntKey::CpuUpdateMs),
@@ -221,6 +227,7 @@ pub const PROC: &[ConfigKey] = &[
     ConfigKey::Bool(BoolKey::ProcTree),
     ConfigKey::Bool(BoolKey::ProcAggregate),
     ConfigKey::Bool(BoolKey::ProcRankings),
+    ConfigKey::Bool(BoolKey::MemorySortRam),
     ConfigKey::Bool(BoolKey::ProcColors),
     ConfigKey::Bool(BoolKey::ProcPerCore),
     ConfigKey::Bool(BoolKey::ProcMemBytes),
@@ -239,6 +246,7 @@ pub const PROC: &[ConfigKey] = &[
 pub const GPU: &[ConfigKey] = &[
     ConfigKey::Int(IntKey::GpuUpdateMs),
     ConfigKey::Int(IntKey::GpuPowerMaxWatts),
+    ConfigKey::Int(IntKey::GpuClockMaxMhz),
 ];
 
 /// Options in the "disk" category.
@@ -554,7 +562,10 @@ pub fn draw(p: &DrawParams) -> String {
     for (i, cat_def) in CATEGORIES.iter().enumerate() {
         let selected = i == cat;
         let (lead, trail) = if selected { ('[', ']') } else { (' ', ' ') };
-        let highlighted = highlight_hotkey(cat_def.name, cat_def.hotkey, title_c, hi);
+        let highlighted = button(
+            &highlight_hotkey(cat_def.name, cat_def.hotkey, title_c, hi),
+            MODAL + OPTION_TAB + i as u32,
+        );
         out.push_str(&format!(
             "{bold}{hi}{lead}{highlighted}{hi}{trail}{reset}",
             bold = term::BOLD,
@@ -569,12 +580,12 @@ pub fn draw(p: &DrawParams) -> String {
             "{}{}{} {} page {}/{} {} {}",
             term::mv(x + 2, y + 6 + height),
             hi,
-            symbols::UP_ARROW,
+            button(symbols::UP_ARROW, MODAL + KEY_PAGEUP),
             title_c,
             page + 1,
             pages,
             hi,
-            symbols::DOWN_ARROW,
+            button(symbols::DOWN_ARROW, MODAL + KEY_PAGEDOWN),
         ));
     }
 
@@ -599,7 +610,7 @@ pub fn draw(p: &DrawParams) -> String {
         }
 
         let full_name = format!("{}{}", name_display, name_suffix);
-        let name_str = cjust(&full_name, 29);
+        let name_str = button(&cjust(&full_name, 29), MODAL + OPTION_NAME + c as u32);
         out.push_str(&format!(
             "{}{}{}{}",
             term::mv(x + 2, cy_start + c * 2),
@@ -640,7 +651,7 @@ pub fn draw(p: &DrawParams) -> String {
                 reset,
             ));
         } else {
-            let value_display = cjust(&value, 25);
+            let value_display = button(&cjust(&value, 25), MODAL + OPTION_VALUE + c as u32);
             // Selected row: render the value with both `sel_bg` and
             // `sel_fg` (matching the name row above). Without
             // `sel_bg`, themes whose `selected_fg` matches
@@ -709,11 +720,11 @@ pub fn draw(p: &DrawParams) -> String {
                             term::mv(x + 3, val_row),
                             sel_bg,
                             hi,
-                            symbols::LEFT_ARROW,
+                            button(symbols::LEFT_ARROW, MODAL + KEY_LEFT),
                             term::mv(x + 29, val_row),
                             sel_bg,
                             hi,
-                            symbols::RIGHT_ARROW,
+                            button(symbols::RIGHT_ARROW, MODAL + KEY_RIGHT),
                         ));
                         out.push_str(reset);
                     }
@@ -724,7 +735,7 @@ pub fn draw(p: &DrawParams) -> String {
                             term::mv(x + 29, val_row),
                             sel_bg,
                             hi,
-                            symbols::ENTER,
+                            button(symbols::ENTER, MODAL + KEY_ENTER),
                         ));
                         out.push_str(reset);
                     }
@@ -747,6 +758,21 @@ pub fn draw(p: &DrawParams) -> String {
         }
     }
 
+    let footer = if option_edit.is_some() {
+        format!(
+            "{} {}",
+            button("Enter save", MODAL + KEY_ENTER),
+            button("Esc cancel", MODAL + crate::draw::controls::KEY_ESCAPE)
+        )
+    } else {
+        button("Esc close", MODAL + crate::draw::controls::KEY_ESCAPE)
+    };
+    out.push_str(&term::mv(
+        x + box_w - crate::tools::ulen(&footer) - 2,
+        y + 6 + height,
+    ));
+    out.push_str(title_c);
+    out.push_str(&footer);
     out.push_str(reset);
     out
 }

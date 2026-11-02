@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crossterm::{cursor, execute, terminal};
 use std::io::{self, Write};
 
@@ -19,6 +20,7 @@ pub fn mv(x: usize, y: usize) -> String {
 }
 
 pub struct Terminal {
+    pub controls: std::cell::RefCell<crate::draw::controls::Screen>,
     pub width: u16,
     pub height: u16,
     pub sync_enabled: bool,
@@ -27,10 +29,24 @@ pub struct Terminal {
 impl Terminal {
     /// Initialize the terminal: raw mode, alternate screen, hide cursor.
     pub fn init(sync_enabled: bool) -> io::Result<Self> {
-        terminal::enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide)?;
         let (w, h) = terminal::size()?;
+        terminal::enable_raw_mode()?;
+        // Construct the cleanup guard before enabling any further modes.
+        let terminal = Self {
+            controls: std::cell::RefCell::new(crate::draw::controls::Screen::default()),
+            width: w,
+            height: h,
+            sync_enabled,
+        };
+        let mut stdout = io::stdout();
+        execute!(
+            stdout,
+            terminal::EnterAlternateScreen,
+            cursor::Hide,
+            crossterm::event::EnableMouseCapture,
+            crossterm::event::EnableBracketedPaste
+        )?;
+
         tracing::info!(
             subsystem = %crate::log::Subsystem::Terminal,
             width = w,
@@ -38,11 +54,7 @@ impl Terminal {
             sync_enabled,
             "terminal initialized",
         );
-        Ok(Self {
-            width: w,
-            height: h,
-            sync_enabled,
-        })
+        Ok(terminal)
     }
 
     pub fn set_sync(&mut self, enabled: bool) {
@@ -52,7 +64,13 @@ impl Terminal {
     /// Restore terminal to normal state.
     pub fn restore(&self) {
         let mut stdout = io::stdout();
-        if let Err(e) = execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen) {
+        if let Err(e) = execute!(
+            stdout,
+            crossterm::event::DisableMouseCapture,
+            crossterm::event::DisableBracketedPaste,
+            cursor::Show,
+            terminal::LeaveAlternateScreen
+        ) {
             tracing::warn!(
                 subsystem = %crate::log::Subsystem::Terminal,
                 error = %e,
@@ -91,7 +109,8 @@ impl Terminal {
     /// Write raw string to stdout and flush.
     pub fn write_raw(&self, s: &str) -> io::Result<()> {
         let mut stdout = io::stdout();
-        stdout.write_all(s.as_bytes())?;
+        let output = self.controls.borrow_mut().output(s);
+        stdout.write_all(output.as_bytes())?;
         stdout.flush()
     }
 

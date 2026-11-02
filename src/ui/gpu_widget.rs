@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::collect::CollectStatus;
 use crate::domain::config_enums::TempScale;
 use crate::domain::gpu::GpuInfo;
@@ -17,6 +18,7 @@ use super::WidgetArea;
 /// `&CpuConfig` / `&UiConfig` borrows for one field each.
 pub struct GpuFrame {
     pub power_max_watts: i64,
+    pub clock_max_mhz: i64,
     pub temp_scale: TempScale,
     pub base_10: bool,
 }
@@ -119,7 +121,11 @@ pub fn draw(
     let max_name_w = inner_w.saturating_sub(title.len() + 10).max(1);
     let name_trunc: String = gpu.name.chars().take(max_name_w).collect();
     if !name_trunc.is_empty() {
-        let chip_text = format!("← {hi}[{title_color} {name_trunc} {hi}]{title_color} →");
+        let chip_text = format!(
+            "{} {title_color}{name_trunc} {}",
+            crate::draw::controls::button(&format!("← {hi}[{title_color}"), '[' as u32),
+            crate::draw::controls::button(&format!("{hi}]{title_color} →"), ']' as u32)
+        );
         let chip_inset = box_drawing::title_inset(&chip_text, border_color, title_color, false);
         let plain_chip = format!("← [ {name_trunc} ] →");
         let chip_x = box_drawing::right_inset_x(x, width, box_drawing::inset_width(&plain_chip));
@@ -150,12 +156,15 @@ pub fn draw(
     }
 
     let clock = gpu.gpu_clock_speed;
-    let max_clock = gpu.gpu_max_clock_speed;
-    let clock_pct = if max_clock > 0 {
-        (clock as i32 * 100 / max_clock as i32).clamp(0, 100)
+    let max_clock = if frame.clock_max_mhz > 0 {
+        frame.clock_max_mhz as u64
     } else {
-        0
+        u64::from(gpu.gpu_max_clock_speed)
     };
+    let clock_pct = (u64::from(clock) * 100)
+        .checked_div(max_clock)
+        .unwrap_or(0)
+        .min(100) as i32;
     if row < inner_h {
         buf.mv(content_x, y + 2 + row)
             .color(fg)
@@ -274,6 +283,7 @@ impl super::Widget for GpuWidget {
         let area = super::WidgetArea::from_dim(gpu_dim, params.rounded);
         let frame = GpuFrame {
             power_max_watts: params.config.gpu.gpu_power_max_watts,
+            clock_max_mhz: params.config.gpu.gpu_clock_max_mhz,
             temp_scale: params.config.cpu.temp_scale,
             base_10: params.config.ui.base_10_sizes,
         };
@@ -339,6 +349,7 @@ mod tests {
     fn make_frame() -> GpuFrame {
         GpuFrame {
             power_max_watts: 0,
+            clock_max_mhz: 0,
             temp_scale: TempScale::Celsius,
             base_10: false,
         }
@@ -363,6 +374,30 @@ mod tests {
         let auto = draw(&gpu, &make_area(), &theme, &frame, &CollectStatus::Ok);
         assert!(strip_ansi(&auto).contains("26W/26W"));
         assert_eq!(gpu.pwr_max_usage, 26_000);
+    }
+
+    #[test]
+    fn clock_override_works_without_reference_and_clamps_large_readings() {
+        let mut gpu = make_gpu_info();
+        gpu.gpu_max_clock_speed = 0;
+        gpu.gpu_clock_speed = 1500;
+        let mut frame = make_frame();
+        frame.clock_max_mhz = 3000;
+        let theme = Theme::default();
+        let output = draw(&gpu, &make_area(), &theme, &frame, &CollectStatus::Ok);
+        assert!(output.contains(&format!(
+            "{}{:>10}",
+            theme.gradient(tc::GRAD_GPU_CLOCK)[50],
+            "1.5GHz"
+        )));
+        gpu.gpu_clock_speed = u32::MAX;
+        let output = draw(&gpu, &make_area(), &theme, &frame, &CollectStatus::Ok);
+        assert!(output.contains(&format!(
+            "{}{}",
+            theme.gradient(tc::GRAD_GPU_CLOCK)[100],
+            tools::rjust(&fmt_clock(u32::MAX), 10, true)
+        )));
+        assert_eq!(gpu.gpu_max_clock_speed, 0);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Independent CPU, commit size, GPU usage and VRAM rankings.
 use super::*;
 use crate::collect::process_display::{ProcSort, build_proc_display_entries};
@@ -12,29 +13,27 @@ pub(super) fn draw(
     status: &CollectStatus,
 ) -> String {
     let mut buf = AnsiBuffer::new();
-    let panel_height = area.height / 4;
+    let heights =
+        crate::domain::resizing::allocate(area.height, &settings.ranking_weights, &[5; 5]);
     for (index, title) in [
         "CPU processes",
         "Memory processes",
+        "I/O processes (R+W▼)",
         "GPU processes",
         "VRAM processes",
     ]
     .into_iter()
     .enumerate()
     {
-        let y = area.y + index * panel_height;
-        let height = if index == 3 {
-            area.height - index * panel_height
-        } else {
-            panel_height
-        };
+        let y = area.y + heights[..index].iter().sum::<usize>();
+        let height = heights[index];
         let sort = if index == 0 {
             ProcSort::Cpu
         } else {
             ProcSort::Memory
         };
-        let gpu = index >= 2;
-        let usage_primary = index % 2 == 0;
+        let gpu = index >= 3;
+        let usage_primary = index == 0 || index == 3;
         let title = if view.paused {
             format!("{title} [paused]")
         } else {
@@ -66,6 +65,18 @@ pub(super) fn draw(
             theme.color(tc::PROC_WIDGET),
             theme.color(tc::TITLE),
         );
+        if index == 2 {
+            draw_io(
+                &mut buf,
+                procs,
+                &WidgetArea { y, height, ..*area },
+                theme,
+                settings,
+                view,
+            );
+            draw_footer(&mut buf, area, y, height, theme, view);
+            continue;
+        }
         let show_ram = !gpu;
         let name_width = area.width.saturating_sub(if show_ram { 28 } else { 21 });
         let cpu_x = area.x + 3 + name_width + 1;
@@ -94,18 +105,40 @@ pub(super) fn draw(
         let mem_label = match (gpu, usage_primary) {
             (true, false) => "VRAM▼",
             (true, true) => "VRAM",
-            (false, false) => "Commit▼",
+            (false, false) if !settings.memory_sort_ram => "Commit▼",
+            (false, false) => "Commit",
             (false, true) => "Commit",
         };
         if show_ram {
             buf.mv(ram_x, y + 2)
                 .color(theme.color(tc::TITLE))
-                .text("   RAM");
+                .text(&if index == 1 {
+                    crate::draw::controls::button(
+                        if settings.memory_sort_ram {
+                            "  RAM▼"
+                        } else {
+                            "   RAM"
+                        },
+                        'M' as u32,
+                    )
+                } else {
+                    "   RAM".into()
+                });
         }
         buf.mv(mem_x, y + 2)
             .color(theme.color(tc::TITLE))
-            .text(&format!("{mem_label:>7}"));
+            .text(&if index == 1 {
+                crate::draw::controls::button(&format!("{mem_label:>7}"), 'C' as u32)
+            } else {
+                format!("{mem_label:>7}")
+            });
         let mut entries = build_proc_display_entries(procs, sort, true, view.filter, false, false);
+        if index == 1 && settings.memory_sort_ram {
+            entries.sort_by(|a, b| {
+                let (a, b) = (&procs[a.proc_index], &procs[b.proc_index]);
+                b.ram.cmp(&a.ram).then(a.pid.cmp(&b.pid))
+            });
+        }
         if gpu {
             entries.sort_by(|a, b| {
                 let (a, b) = (&procs[a.proc_index], &procs[b.proc_index]);
@@ -204,25 +237,182 @@ pub(super) fn draw(
                 .color(value_mem_color)
                 .text(&tools::rjust(&mem, 7, true));
         }
-        let footer = if view.filtering {
-            format!("filter: {}_", view.filter)
-        } else if !view.filter.is_empty() {
-            format!("filter: {}", view.filter)
-        } else {
-            "f filter  Space pause".into()
-        };
-        buf.mv(area.x + 3, y + height)
-            .color(theme.color(tc::TITLE))
-            .text(&tools::uresize(&footer, area.width.saturating_sub(6)))
-            .reset();
+        draw_footer(&mut buf, area, y, height, theme, view);
     }
     buf.finish()
+}
+
+fn draw_footer(
+    buf: &mut AnsiBuffer,
+    area: &WidgetArea,
+    y: usize,
+    height: usize,
+    theme: &Theme,
+    view: &ProcView,
+) {
+    let footer = if view.filtering {
+        format!("filter: {}_", view.filter)
+    } else if !view.filter.is_empty() {
+        crate::draw::controls::button(&format!("filter: {}", view.filter), 'f' as u32)
+    } else {
+        format!(
+            "{}  {}",
+            crate::draw::controls::button("f filter", 'f' as u32),
+            crate::draw::controls::button("Space pause", 32)
+        )
+    };
+    buf.mv(area.x + 3, y + height)
+        .color(theme.color(tc::TITLE))
+        .text(&tools::uresize(&footer, area.width.saturating_sub(6)))
+        .reset();
+}
+
+fn draw_io(
+    buf: &mut AnsiBuffer,
+    procs: &[ProcInfo],
+    area: &WidgetArea,
+    theme: &Theme,
+    settings: &ProcFrame,
+    view: &ProcView,
+) {
+    let mut entries =
+        build_proc_display_entries(procs, ProcSort::Cpu, true, view.filter, false, false);
+    entries.sort_by(|a, b| {
+        let (a, b) = (&procs[a.proc_index], &procs[b.proc_index]);
+        b.io_rates
+            .map(|r| r.total())
+            .cmp(&a.io_rates.map(|r| r.total()))
+            .then(a.pid.cmp(&b.pid))
+    });
+    let maximum = entries
+        .iter()
+        .filter_map(|e| procs[e.proc_index].io_rates.map(|r| r.total()))
+        .max()
+        .unwrap_or(0);
+    let name_width = area.width.saturating_sub(25);
+    let read_x = area.x + 4 + name_width;
+    let write_x = read_x + 10;
+    buf.mv(area.x + 3, area.y + 2)
+        .color(theme.color(tc::TITLE))
+        .text(&tools::uresize("Program", name_width));
+    buf.mv(read_x, area.y + 2).text("    Read/s");
+    buf.mv(write_x, area.y + 2).text("   Write/s");
+    for (row, entry) in entries
+        .iter()
+        .take(area.height.saturating_sub(4))
+        .enumerate()
+    {
+        let proc = &procs[entry.proc_index];
+        let color = proc.io_rates.map_or(theme.color(tc::INACTIVE_FG), |rates| {
+            if settings.proc_colors {
+                crate::theme::gradient_color(
+                    theme.gradient(tc::GRAD_CPU_UPPER),
+                    rates
+                        .total()
+                        .saturating_mul(100)
+                        .checked_div(maximum)
+                        .unwrap_or(0)
+                        .min(100) as i32,
+                )
+            } else {
+                theme.color(tc::MAIN_FG)
+            }
+        });
+        buf.mv(area.x + 3, area.y + 3 + row)
+            .color(theme.color(tc::MAIN_FG))
+            .text(&tools::ljust(&proc.name, name_width, true));
+        for (x, rate) in [
+            (read_x, proc.io_rates.map(|r| r.read)),
+            (write_x, proc.io_rates.map(|r| r.write)),
+        ] {
+            let text = rate.map_or_else(
+                || "N/A".into(),
+                |value| {
+                    format!(
+                        "{}/s",
+                        tools::floating_humanizer(value, true, 0, false, false, settings.base_10)
+                    )
+                },
+            );
+            buf.mv(x, area.y + 3 + row)
+                .color(color)
+                .text(&tools::rjust(&text, 10, true));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::tests::{make_frame, make_view, strip_ansi};
     use super::*;
+    #[test]
+    fn ram_selection_and_io_known_zero_precede_unknown() {
+        let procs = vec![
+            ProcInfo {
+                pid: 3,
+                name: "unknown".into(),
+                mem: 1000,
+                ram: 1,
+                ..Default::default()
+            },
+            ProcInfo {
+                pid: 2,
+                name: "resident".into(),
+                mem: 1,
+                ram: 2000,
+                io_rates: Some(crate::domain::process::IoRates { read: 0, write: 0 }),
+                ..Default::default()
+            },
+            ProcInfo {
+                pid: 1,
+                name: "active".into(),
+                mem: 2,
+                ram: 2,
+                io_rates: Some(crate::domain::process::IoRates {
+                    read: 10,
+                    write: 20,
+                }),
+                ..Default::default()
+            },
+        ];
+        let mut frame = make_frame();
+        frame.memory_sort_ram = true;
+        let area = WidgetArea {
+            x: 0,
+            y: 0,
+            width: 44,
+            height: 40,
+            rounded: false,
+        };
+        let out = strip_ansi(&draw(
+            &procs,
+            &area,
+            &Theme::default(),
+            &frame,
+            &make_view(),
+            &CollectStatus::Ok,
+        ));
+        let memory = out
+            .split_once("Memory processes")
+            .unwrap()
+            .1
+            .split_once("I/O processes")
+            .unwrap()
+            .0;
+        assert!(memory.contains("RAM▼"));
+        assert!(!memory.contains("Commit▼"));
+        assert!(memory.find("resident").unwrap() < memory.find("unknown").unwrap());
+        let io = out
+            .split_once("I/O processes")
+            .unwrap()
+            .1
+            .split_once("GPU processes")
+            .unwrap()
+            .0;
+        assert!(io.find("active").unwrap() < io.find("resident").unwrap());
+        assert!(io.find("resident").unwrap() < io.find("unknown").unwrap());
+        assert!(io.contains("N/A"));
+    }
 
     #[test]
     fn arrows_ram_and_primary_gradients() {
@@ -255,6 +445,7 @@ mod tests {
             &make_view(),
             &CollectStatus::Ok,
         );
+        let output = crate::draw::controls::Screen::default().output(&output);
         let plain = strip_ansi(&output);
         for label in ["CPU%▼", "Commit▼", "GPU%▼", "VRAM▼"] {
             assert!(plain.contains(label), "{label}");
@@ -358,8 +549,8 @@ mod tests {
             &view,
             &CollectStatus::Ok,
         ));
-        assert_eq!(output.matches("keep-me").count(), 4);
-        assert_eq!(output.matches("[paused]").count(), 4);
+        assert_eq!(output.matches("keep-me").count(), 5);
+        assert_eq!(output.matches("[paused]").count(), 5);
         assert!(!output.contains("exclude-me"));
     }
 }

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: fork identity and configuration isolation.
 mod app;
 mod banner;
 mod cli;
@@ -32,8 +33,36 @@ fn main() {
     }
 
     let mut config = config::Config::new();
-    let default_conf_path = tools::config_dir().join("rtop.toml");
-    let load_warnings = if let Some(ref path) = cli.config_file {
+    let default_conf_path = tools::config_dir().join("rztop.toml");
+    let load_warnings = if let Some(ref path) = cli.import_config {
+        if !path.is_file() || default_conf_path.exists() {
+            eprintln!("Import requires an existing source file and no existing rztop config.");
+            return;
+        }
+        let imported = std::fs::read_to_string(path)
+            .map_err(|error| error.to_string())
+            .and_then(|text| {
+                toml::from_str::<config::Config>(&text).map_err(|error| error.to_string())
+            });
+        config = match imported {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("Config import failed: {error}");
+                return;
+            }
+        };
+        let warnings = config.validate();
+        if !warnings.is_empty() {
+            eprintln!("Import stopped: {}", warnings.join("; "));
+            return;
+        }
+        if let Err(error) = config.write(&default_conf_path) {
+            eprintln!("Config import failed: {error}");
+            return;
+        }
+        config.set_save_path(default_conf_path.clone());
+        warnings
+    } else if let Some(ref path) = cli.config_file {
         config.load(path)
     } else if default_conf_path.exists() {
         config.load(&default_conf_path)
@@ -50,7 +79,7 @@ fn main() {
     });
     log::startup_banner(
         config.log.log_level,
-        &log_dir.join("rtop.log"),
+        &log_dir.join("rztop.log"),
         active_config_file,
     );
 

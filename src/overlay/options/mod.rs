@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Options overlay subsystem: state, render, and per-key actions.
 //!
 //! The options overlay is a centered list of every editable
@@ -434,10 +435,22 @@ pub(crate) fn apply_post_change_effects(key: ConfigKey, ctx: &mut InputContext) 
             .mark_widget(crate::domain::widget_kind::WidgetKind::Mem);
     }
 
-    if key == ConfigKey::Int(IntKey::GpuPowerMaxWatts) {
+    if matches!(
+        key,
+        ConfigKey::Int(IntKey::GpuPowerMaxWatts | IntKey::GpuClockMaxMhz)
+    ) {
         ctx.render
             .dirty
             .mark_widget(crate::domain::widget_kind::WidgetKind::Gpu);
+    }
+
+    if key == ConfigKey::Bool(BoolKey::ShowCpuFreq) {
+        ctx.render.dirty.mark_layout();
+    }
+    if key == ConfigKey::Int(IntKey::CpuClockMaxMhz) {
+        ctx.render
+            .dirty
+            .mark_widget(crate::domain::widget_kind::WidgetKind::Cpu);
     }
 
     // Statusbar visibility / format changes alter the bar's

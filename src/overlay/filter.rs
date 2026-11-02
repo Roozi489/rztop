@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Process-filter overlay subsystem: state and per-key actions.
 //!
 //! The filter overlay is an inline, single-line text input drawn at
@@ -13,9 +14,14 @@ use crate::input::Key;
 
 /// Marker state for an active filter overlay.
 #[derive(Debug, Clone, Default)]
-pub struct FilterState;
+pub struct FilterState {
+    pub original: String,
+}
 
 pub(crate) fn cancel_action(ctx: &mut InputContext, _: &Key) {
+    if let super::ActiveModal::Filter(state) = &ctx.overlay.active {
+        ctx.view.proc_filter.clone_from(&state.original);
+    }
     ctx.close_overlay();
     ctx.render.dirty.mark_proc_data_changed();
 }

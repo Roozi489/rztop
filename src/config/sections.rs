@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Per-subsystem persisted configuration sections.
 //!
 //! `Config` was originally a 50+-field flat struct; renderers and
@@ -154,6 +155,7 @@ pub struct CpuConfig {
     pub show_coretemp: bool,
     pub temp_scale: TempScale,
     pub show_cpu_freq: bool,
+    pub cpu_clock_max_mhz: i64,
     pub custom_cpu_name: String,
     pub show_cpu_watts: bool,
 }
@@ -171,6 +173,7 @@ impl Default for CpuConfig {
             show_coretemp: true,
             temp_scale: TempScale::Celsius,
             show_cpu_freq: true,
+            cpu_clock_max_mhz: 0,
             custom_cpu_name: String::new(),
             show_cpu_watts: true,
         }
@@ -272,6 +275,7 @@ impl Default for NetConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProcConfig {
+    pub memory_sort_ram: bool,
     /// Compact CPU, commit size, GPU usage and VRAM rankings.
     #[serde(alias = "proc_dual_view")]
     pub proc_rankings: bool,
@@ -284,6 +288,7 @@ pub struct ProcConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GpuConfig {
+    pub gpu_clock_max_mhz: i64,
     /// Zero uses the collector's reference; positive values are watts.
     pub gpu_power_max_watts: i64,
 }
@@ -291,6 +296,7 @@ pub struct GpuConfig {
 impl Default for ProcConfig {
     fn default() -> Self {
         Self {
+            memory_sort_ram: false,
             proc_rankings: true,
             proc_aggregate: false,
             proc_colors: true,

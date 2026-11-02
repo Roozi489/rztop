@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::collect::CollectStatus;
 use crate::domain::network::NetInfo;
 use crate::draw::box_drawing;
@@ -328,10 +329,13 @@ pub fn draw(
             };
 
         if !display_name.is_empty() {
+            let previous =
+                crate::draw::controls::button(&format!("← {hi}<{title_color}"), 'b' as u32);
+            let next = crate::draw::controls::button(&format!("{hi}>{title_color} →"), 'n' as u32);
             let chip_text = if link_in_chip {
-                format!("← {hi}<{title_color} {display_name} ({link_str}) {hi}>{title_color} →")
+                format!("{previous} {display_name} ({link_str}) {next}")
             } else {
-                format!("← {hi}<{title_color} {display_name} {hi}>{title_color} →")
+                format!("{previous} {display_name} {next}")
             };
             let plain = if link_in_chip {
                 format!("← < {display_name} ({link_str}) > →")
@@ -353,8 +357,10 @@ pub fn draw(
 
     let sync_marker = if net_sync { "*" } else { "" };
     let auto_marker = if net_auto { "*" } else { "" };
-    let sync_text = format!("{hi}s{title_color}ync{sync_marker}");
-    let auto_text = format!("{hi}a{title_color}uto{auto_marker}");
+    let sync_text =
+        crate::draw::controls::button(&format!("{hi}s{title_color}ync{sync_marker}"), 's' as u32);
+    let auto_text =
+        crate::draw::controls::button(&format!("{hi}a{title_color}uto{auto_marker}"), 'a' as u32);
     let sync_inset = box_drawing::title_inset(&sync_text, border_color, title_color, true);
     let auto_inset = box_drawing::title_inset(&auto_text, border_color, title_color, true);
 
@@ -628,6 +634,7 @@ mod tests {
             &make_frame(),
             &CollectStatus::Ok,
         );
+        let output = crate::draw::controls::Screen::default().output(&output);
         let title = theme.color(tc::TITLE);
         let hi = theme.color(tc::HI_FG);
 

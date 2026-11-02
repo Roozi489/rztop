@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use std::fmt;
 
 /// Information about a single process.
@@ -33,6 +34,8 @@ pub struct ProcInfo {
     pub io_read: u64,
     /// Total IO bytes written.
     pub io_write: u64,
+    /// General I/O bytes/second, requiring two valid samples of the same process.
+    pub io_rates: Option<IoRates>,
 }
 
 impl Default for ProcInfo {
@@ -54,7 +57,20 @@ impl Default for ProcInfo {
             cpu_time: 0,
             io_read: 0,
             io_write: 0,
+            io_rates: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IoRates {
+    pub read: u64,
+    pub write: u64,
+}
+
+impl IoRates {
+    pub fn total(self) -> u64 {
+        self.read.saturating_add(self.write)
     }
 }
 

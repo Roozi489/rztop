@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::domain::process::{PriorityClass, ProcInfo, ProcState};
 use std::{
     collections::{HashMap, HashSet},
@@ -91,6 +92,71 @@ unsafe extern "system" {
 }
 
 /// Process data collector using Windows APIs.
+#[derive(Clone, Copy)]
+struct IoSample {
+    created: u64,
+    read: u64,
+    write: u64,
+    at: std::time::Instant,
+}
+
+impl IoSample {
+    fn rates(&self, previous: &Self) -> Option<crate::domain::process::IoRates> {
+        if self.created != previous.created {
+            return None;
+        }
+        let elapsed = self.at.checked_duration_since(previous.at)?.as_nanos();
+        let per_second = |current: u64, old: u64| {
+            let delta = u128::from(current.checked_sub(old)?);
+            Some(
+                (delta.checked_mul(1_000_000_000)?.checked_div(elapsed)?).min(u128::from(u64::MAX))
+                    as u64,
+            )
+        };
+        Some(crate::domain::process::IoRates {
+            read: per_second(self.read, previous.read)?,
+            write: per_second(self.write, previous.write)?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod io_rate_tests {
+    use super::*;
+    #[test]
+    fn rates_use_actual_elapsed_time_and_reject_invalid_pairs() {
+        let first = IoSample {
+            created: 7,
+            read: 100,
+            write: 200,
+            at: std::time::Instant::now(),
+        };
+        let next = IoSample {
+            read: 600,
+            write: 1200,
+            at: first.at + std::time::Duration::from_millis(250),
+            ..first
+        };
+        assert_eq!(
+            next.rates(&first),
+            Some(crate::domain::process::IoRates {
+                read: 2000,
+                write: 4000
+            })
+        );
+        assert!(IoSample { created: 8, ..next }.rates(&first).is_none());
+        assert!(IoSample { read: 99, ..next }.rates(&first).is_none());
+        assert!(IoSample { write: 199, ..next }.rates(&first).is_none());
+        assert!(first.rates(&first).is_none());
+        assert!(first.rates(&next).is_none());
+        let idle = IoSample {
+            at: next.at,
+            ..first
+        };
+        assert_eq!(idle.rates(&first).unwrap().total(), 0);
+    }
+}
+
 pub struct ProcCollector {
     /// Raw collected process data — never sorted/filtered in place.
     pub procs: Vec<ProcInfo>,
@@ -98,6 +164,7 @@ pub struct ProcCollector {
     /// Per-PID kernel + user CPU ticks from the previous cycle.
     /// Used to compute the CPU% delta for the current cycle's window.
     prev_times: HashMap<u32, u64>,
+    prev_io: HashMap<u32, IoSample>,
     last_collect: std::time::Instant,
     core_count: usize,
     gpu: super::process_gpu::ProcessGpu,
@@ -109,6 +176,7 @@ impl ProcCollector {
             procs: Vec::new(),
             status: super::CollectStatus::Ok,
             prev_times: HashMap::new(),
+            prev_io: HashMap::new(),
             last_collect: std::time::Instant::now(),
             core_count: 1,
             gpu: super::process_gpu::ProcessGpu::default(),
@@ -134,6 +202,9 @@ impl ProcCollector {
 
         let core_count = self.core_count;
         let mut new_procs = Vec::new();
+        // Separate next-sample map drops exited and inaccessible processes each cycle.
+        let mut next_io = HashMap::new();
+        let previous_io = std::mem::take(&mut self.prev_io);
         // One system-wide query, before walking the Toolhelp snapshot,
         // so each process can be labelled without a second syscall.
         let suspended = collect_suspended_pids();
@@ -187,6 +258,13 @@ impl ProcCollector {
                     let threads = entry.cntThreads as usize;
 
                     let details = get_process_details(pid, &self.prev_times, elapsed, core_count);
+                    let io_rates = details.io_sample.and_then(|sample| {
+                        let rates = previous_io
+                            .get(&pid)
+                            .and_then(|previous| sample.rates(previous));
+                        next_io.insert(pid, sample);
+                        rates
+                    });
 
                     new_procs.push(ProcInfo {
                         pid,
@@ -213,6 +291,7 @@ impl ProcCollector {
                         cpu_time: details.cpu_time,
                         io_read: details.io_read,
                         io_write: details.io_write,
+                        io_rates,
                     });
 
                     if Process32NextW(snapshot.get(), &mut entry).is_err() {
@@ -229,6 +308,7 @@ impl ProcCollector {
         }
 
         self.gpu.update(&mut new_procs);
+        self.prev_io = next_io;
         self.procs = new_procs;
     }
 }
@@ -386,6 +466,7 @@ fn collect_suspended_pids() -> HashSet<u32> {
 /// grown past the point where positional returns are readable, and
 /// every field is filled from the same handle.
 struct ProcessDetails {
+    io_sample: Option<IoSample>,
     cpu_p: f64,
     cpu_time: u64,
     mem: u64,
@@ -404,6 +485,7 @@ struct ProcessDetails {
 impl Default for ProcessDetails {
     fn default() -> Self {
         Self {
+            io_sample: None,
             cpu_p: 0.0,
             cpu_time: 0,
             mem: 0,
@@ -427,6 +509,7 @@ fn get_process_details(
     use windows::Win32::System::Threading::*;
 
     let mut details = ProcessDetails::default();
+    let mut created = None;
 
     // SAFETY: OpenProcess is called with limited query rights. The returned
     // handle is checked before use. FILETIME, PROCESS_MEMORY_COUNTERS and
@@ -452,6 +535,7 @@ fn get_process_details(
             .is_ok()
             {
                 let kt = filetime_to_u64(&kernel);
+                created = Some(filetime_to_u64(&creation));
                 let ut = filetime_to_u64(&user_time);
                 details.cpu_time = kt.saturating_add(ut);
 
@@ -484,6 +568,12 @@ fn get_process_details(
             if GetProcessIoCounters(handle.get(), &mut io).is_ok() {
                 details.io_read = io.ReadTransferCount;
                 details.io_write = io.WriteTransferCount;
+                details.io_sample = created.map(|created| IoSample {
+                    created,
+                    read: io.ReadTransferCount,
+                    write: io.WriteTransferCount,
+                    at: std::time::Instant::now(),
+                });
             }
 
             let pclass = GetPriorityClass(handle.get());

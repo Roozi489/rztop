@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-02: fork identity and configuration isolation.
 //! Logging subsystem.
 //!
 //! `tracing_subscriber::filter::LevelFilter` is the canonical type
@@ -55,7 +56,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::reload;
 
 /// Default value for the `log_level` config field when missing
-/// from `rtop.toml` or for new configs.
+/// from `rztop.toml` or for new configs.
 pub fn default_filter() -> LevelFilter {
     LevelFilter::WARN
 }
@@ -121,7 +122,7 @@ pub mod serde_filter {
     }
 }
 
-/// Identifies which part of rtop emitted a log event.
+/// Identifies which part of rztop emitted a log event.
 ///
 /// Every `tracing::*!` call attaches one of these as the `subsystem`
 /// structured field via `subsystem = %Subsystem::Foo`. The `Display`
@@ -219,17 +220,17 @@ impl tracing_subscriber::fmt::time::FormatTime for LocalTime {
 static RELOAD_HANDLE: OnceLock<reload::Handle<LevelFilter, Registry>> = OnceLock::new();
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Create the log directory if missing and truncate `rtop.log`.
+/// Create the log directory if missing and truncate `rztop.log`.
 fn prepare_log_dir(log_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(log_dir)?;
-    let log_file = log_dir.join("rtop.log");
+    let log_file = log_dir.join("rztop.log");
     std::fs::write(&log_file, b"")?;
     Ok(())
 }
 
-/// Install a process-wide panic hook that logs panics to `rtop.log`
+/// Install a process-wide panic hook that logs panics to `rztop.log`
 /// at the moment they occur, then chains the previous hook so default
-/// stderr behavior is preserved for users who run rtop from a parent
+/// stderr behavior is preserved for users who run rztop from a parent
 /// shell with `RUST_BACKTRACE=1`.
 fn install_panic_hook() {
     let previous_hook = std::panic::take_hook();
@@ -255,10 +256,10 @@ fn install_panic_hook() {
 
 /// Build the file appender, install the subscriber as the global
 /// default, install the panic hook, and store the reload handle.
-/// Truncates `rtop.log`.
+/// Truncates `rztop.log`.
 fn install_subscriber(log_dir: &Path, filter: LevelFilter) -> Result<(), InitError> {
     prepare_log_dir(log_dir)?;
-    let file_appender = rolling::never(log_dir, "rtop.log");
+    let file_appender = rolling::never(log_dir, "rztop.log");
     let (filter_layer, handle) = reload::Layer::new(filter);
     let subscriber = tracing_subscriber::registry().with(
         fmt::layer()
@@ -285,7 +286,7 @@ fn install_subscriber(log_dir: &Path, filter: LevelFilter) -> Result<(), InitErr
 
 /// Initialise the logging system.
 ///
-/// `rtop.log` lives inside `log_dir`. With `filter` set to a
+/// `rztop.log` lives inside `log_dir`. With `filter` set to a
 /// non-`OFF` level the directory is created, the file is
 /// truncated, and the subscriber is installed immediately. With
 /// `filter == LevelFilter::OFF` no subscriber is installed and
@@ -313,7 +314,7 @@ pub fn init(log_dir: &Path, filter: LevelFilter) -> Result<(), InitError> {
 /// * No subscriber and `filter == LevelFilter::OFF` → no-op.
 /// * No subscriber and `filter != LevelFilter::OFF` → install
 ///   the subscriber for the first time, which prepares the log
-///   directory and truncates `rtop.log`.
+///   directory and truncates `rztop.log`.
 ///
 /// Panics if [`init`] was not called first; the in-tree callers
 /// all run after `main` has called `init`.
@@ -363,7 +364,7 @@ fn windows_version() -> String {
 }
 
 /// Emit the startup diagnostic banner — a single INFO event with all
-/// the context a maintainer needs from a bug report: rtop version,
+/// the context a maintainer needs from a bug report: rztop version,
 /// build profile, target triple, Windows version, host, user, config
 /// path, log path, log level.
 ///
@@ -381,7 +382,7 @@ pub fn startup_banner(level: LevelFilter, log_file: &Path, config_file: Option<&
         .unwrap_or_else(|| "default".into());
     tracing::info!(
         subsystem = %Subsystem::Startup,
-        rtop = env!("CARGO_PKG_VERSION"),
+        rztop = env!("CARGO_PKG_VERSION"),
         profile,
         windows = %windows_version(),
         host = %crate::tools::hostname(),
@@ -389,7 +390,7 @@ pub fn startup_banner(level: LevelFilter, log_file: &Path, config_file: Option<&
         config = %config_display,
         log = %log_file.display(),
         log_level = %level,
-        "rtop starting",
+        "rztop starting",
     );
 }
 
@@ -427,20 +428,20 @@ mod tests {
 
     #[test]
     fn prepare_log_dir_creates_missing_directory() {
-        let tmp = std::env::temp_dir().join("rtop_log_dir_test");
+        let tmp = std::env::temp_dir().join("rztop_log_dir_test");
         let _ = std::fs::remove_dir_all(&tmp);
         prepare_log_dir(&tmp).expect("prepare_log_dir must succeed");
         assert!(tmp.exists());
-        assert!(tmp.join("rtop.log").exists());
+        assert!(tmp.join("rztop.log").exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn prepare_log_dir_truncates_existing_log_file() {
-        let tmp = std::env::temp_dir().join("rtop_log_dir_truncate_test");
+        let tmp = std::env::temp_dir().join("rztop_log_dir_truncate_test");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        let log_file = tmp.join("rtop.log");
+        let log_file = tmp.join("rztop.log");
         std::fs::write(&log_file, b"stale content").unwrap();
         prepare_log_dir(&tmp).expect("prepare_log_dir must succeed");
         assert_eq!(std::fs::read(&log_file).unwrap(), b"");
