@@ -186,32 +186,37 @@ impl Screen {
             Axis::Horizontal => x,
             Axis::Vertical => y,
         };
-        let clear: Vec<usize> = (divider.start..=divider.end)
-            .filter(|&along| {
-                (0..2).all(|offset| {
-                    let key = match divider.axis {
-                        Axis::Horizontal => (along, divider.position + offset),
-                        Axis::Vertical => (divider.position + offset, along),
-                    };
-                    self.cells.get(&key).is_some_and(|c| {
-                        c.control == 0
-                            && match divider.axis {
-                                Axis::Horizontal => c.ch == '─' || c.ch == '━',
-                                Axis::Vertical => c.ch == '│' || c.ch == '┃',
-                            }
-                    })
-                })
+        let clear = |along, offset| {
+            let key = match divider.axis {
+                Axis::Horizontal => (along, divider.position + offset),
+                Axis::Vertical => (divider.position + offset, along),
+            };
+            self.cells.get(&key).is_some_and(|c| {
+                c.control == 0
+                    && match divider.axis {
+                        Axis::Horizontal => c.ch == '─' || c.ch == '━',
+                        Axis::Vertical => c.ch == '│' || c.ch == '┃',
+                    }
             })
-            .collect();
-        let arrow = clear.iter().copied().min_by_key(|p| p.abs_diff(point));
+        };
+        let can_move = [
+            divider.sizes[divider.before] > divider.minimums[divider.before],
+            divider.sizes[divider.after] > divider.minimums[divider.after],
+        ];
+        let arrow = (divider.start..=divider.end)
+            .filter(|&along| (0..2).all(|offset| !can_move[offset] || clear(along, offset)))
+            .min_by_key(|p| p.abs_diff(point));
         let mut out = String::new();
-        for along in clear {
-            for offset in 0..2 {
+        for along in divider.start..=divider.end {
+            for (offset, movable) in can_move.iter().enumerate() {
+                if !clear(along, offset) {
+                    continue;
+                }
                 let (x, y, stroke) = match divider.axis {
                     Axis::Horizontal => (
                         along,
                         divider.position + offset,
-                        if Some(along) == arrow {
+                        if Some(along) == arrow && *movable {
                             if offset == 0 { "^" } else { "v" }
                         } else {
                             "="
@@ -220,7 +225,7 @@ impl Screen {
                     Axis::Vertical => (
                         divider.position + offset,
                         along,
-                        if Some(along) == arrow {
+                        if Some(along) == arrow && *movable {
                             if offset == 0 { "<" } else { ">" }
                         } else {
                             "║"
@@ -253,7 +258,7 @@ mod tests {
             end: 8,
             before: 0,
             after: 1,
-            sizes: vec![5, 5],
+            sizes: vec![10, 10],
             minimums: vec![5, 5],
         }];
         let raw = "\x1b[2;1H──XX────\x1b[3;1H────────";
@@ -261,12 +266,56 @@ mod tests {
         assert!(output.contains("\x1b[2;5H^"));
         assert!(output.contains("\x1b[3;5Hv"));
         assert!(!output.contains("\x1b[2;4H^"));
+        // A caption on one outline must not punch a hole in the other outline.
+        assert!(output.contains("\x1b[3;3H="));
+        assert!(output.contains("\x1b[3;4H="));
+        assert!(!output.contains("\x1b[2;3H="));
         screen.pointer = Some((7, 2));
         let moved = screen.output(raw);
         assert!(moved.contains("\x1b[2;7H^"));
         assert!(moved.contains("\x1b[2;5H="));
         screen.pointer = None;
         assert_eq!(screen.output(raw), raw);
+    }
+
+    #[test]
+    fn arrows_only_show_available_directions_on_both_axes() {
+        for axis in [Axis::Horizontal, Axis::Vertical] {
+            for (sizes, expected) in [
+                ([5, 10], [false, true]),
+                ([10, 5], [true, false]),
+                ([5, 5], [false, false]),
+            ] {
+                let mut screen = Screen {
+                    valid: true,
+                    pointer: Some((2, 2)),
+                    dividers: vec![Divider {
+                        target: crate::domain::resizing::SplitTarget::Rankings,
+                        axis,
+                        position: 2,
+                        start: 1,
+                        end: 4,
+                        before: 0,
+                        after: 1,
+                        sizes: sizes.to_vec(),
+                        minimums: vec![5, 5],
+                    }],
+                    ..Default::default()
+                };
+                let raw = match axis {
+                    Axis::Horizontal => "\x1b[2;1H────\x1b[3;1H────",
+                    Axis::Vertical => "\x1b[1;2H││\x1b[2;2H││\x1b[3;2H││\x1b[4;2H││",
+                };
+                let output = screen.output(raw);
+                let arrows = match axis {
+                    Axis::Horizontal => ['^', 'v'],
+                    Axis::Vertical => ['<', '>'],
+                };
+                for (arrow, visible) in arrows.into_iter().zip(expected) {
+                    assert_eq!(output.contains(arrow), visible);
+                }
+            }
+        }
     }
     #[test]
     fn hover_uses_final_overpaint_and_only_the_pointed_button() {
