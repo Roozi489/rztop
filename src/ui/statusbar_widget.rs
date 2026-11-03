@@ -245,13 +245,13 @@ fn render_right(frame: &StatusbarFrame, bg: &str, fg: &str, sep: &str) -> (Strin
         items.push((frame.ping.to_string(), tools::ulen(frame.ping)));
     }
     if frame.show_uptime {
+        if !frame.self_cpu.is_empty() {
+            items.push((frame.self_cpu.into(), tools::ulen(frame.self_cpu)));
+        }
         let label = uptime_label(frame.uptime_seconds);
         let w = tools::ulen(&label);
         if w > 0 {
             items.push((label, w));
-        }
-        if !frame.self_cpu.is_empty() {
-            items.push((frame.self_cpu.into(), tools::ulen(frame.self_cpu)));
         }
     }
     if frame.show_clock {
@@ -409,7 +409,10 @@ impl super::Widget for StatusbarWidget {
         let self_cpu = params
             .proc_data
             .and_then(|snapshot| snapshot.procs.iter().find(|p| p.pid == std::process::id()))
-            .map_or_else(|| "rztop N/A".into(), |p| format!("rztop {:.1}%", p.cpu_p));
+            .map_or_else(
+                || "rztop CPU N/A".into(),
+                |p| format!("rztop CPU {:.1}%", p.cpu_p),
+            );
         let frame = StatusbarFrame {
             self_cpu: &self_cpu,
             show_menu: params.config.statusbar.statusbar_show_menu,
@@ -447,7 +450,7 @@ mod tests {
     #[test]
     fn self_cpu_sits_next_to_uptime_and_drops_before_controls_overlap() {
         let mut frame = full_frame();
-        frame.self_cpu = "rztop 1.2%";
+        frame.self_cpu = "rztop CPU 1.2%";
         let theme = Theme::default();
         let area = WidgetArea {
             x: 0,
@@ -457,9 +460,9 @@ mod tests {
             rounded: false,
         };
         let output = strip_ansi(&draw(&area, &theme, &frame));
-        assert!(output.find("up ").unwrap() < output.find("rztop 1.2%").unwrap());
+        assert!(output.find("rztop CPU 1.2%").unwrap() < output.find("up ").unwrap());
         let output = strip_ansi(&draw(&WidgetArea { width: 55, ..area }, &theme, &frame));
-        assert!(!output.contains("rztop 1.2%"));
+        assert!(!output.contains("rztop CPU 1.2%"));
         assert!(output.contains("menu"));
     }
 

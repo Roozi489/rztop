@@ -418,4 +418,4 @@ Divider hover uses `=` horizontally and `║` vertically. Paired arrows follow t
 
 ### rztop CPU usage
 
-The statusbar shows rztop's own CPU percentage beside uptime, using the existing live process collector even when rankings are paused or filtered. It is a percentage of total machine CPU capacity. The additional item is omitted when space is tight so it does not increase the minimum terminal width or overlap controls.
+The statusbar shows rztop's own CPU percentage as `rztop CPU x.x%` before uptime, using the existing live process collector even when rankings are paused or filtered. It is a percentage of total machine CPU capacity. The additional item is omitted when space is tight so it does not increase the minimum terminal width or overlap controls.
