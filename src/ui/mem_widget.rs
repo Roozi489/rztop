@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 use crate::collect::CollectStatus;
 use crate::domain::memory::MemInfo;
 use crate::draw::box_drawing;
@@ -243,15 +244,20 @@ pub fn draw(
         let swap_str = tools::floating_humanizer(swap_value, true, 0, false, false, frame.base_10);
         let max_str = tools::floating_humanizer(swap_total, true, 0, false, false, frame.base_10);
         let value = format!(" {swap_str}/{max_str}");
+        let swap_label = if frame.config.swap_max_mib > 0 {
+            "Swap size "
+        } else {
+            "Swap used "
+        };
         let swap_meter = Meter::new(
-            inner_w.saturating_sub(label_w + tools::ulen(&value)),
+            inner_w.saturating_sub(tools::ulen(swap_label) + tools::ulen(&value)),
             used_grad,
             meter_bg,
         );
         if row < inner_h {
             buf.mv(content_x, y + 2 + row)
                 .color(fg)
-                .text("Swap  ")
+                .text(swap_label)
                 .text(swap_meter.render(swap_pct))
                 .color(swap_color)
                 .text(&value);
@@ -510,7 +516,30 @@ mod tests {
                 "{} {expected}",
                 theme.gradient(tc::GRAD_USED)[pct]
             )));
+            assert!(output.contains("Swap size "));
         }
+    }
+
+    #[test]
+    fn swap_used_is_distinct_from_allocated_pagefile_size() {
+        let mut mem = make_mem_info();
+        mem.stats.swap_used = 78 * 1024 * 1024;
+        mem.stats.swap_total = 5 * 1024 * 1024 * 1024;
+        let output = draw(
+            &mem,
+            &make_area(),
+            &Theme::default(),
+            &MemFrame {
+                config: &crate::config::MemConfig {
+                    show_swap: true,
+                    swap_max_mib: 0,
+                },
+                base_10: false,
+            },
+            &CollectStatus::Ok,
+        );
+        assert!(output.contains("Swap used "));
+        assert!(output.contains("78M/5.0G"));
     }
 
     #[test]
@@ -533,7 +562,7 @@ mod tests {
             &CollectStatus::Ok,
         );
         let fg = theme.color(tc::MAIN_FG);
-        for label in &["Used  ", "Avail ", "Cache ", "Commit", "Swap  "] {
+        for label in &["Used  ", "Avail ", "Cache ", "Commit", "Swap used "] {
             assert!(
                 output.contains(&format!("{fg}{label}")),
                 "mem label {label:?} should be preceded by MAIN_FG"

@@ -233,8 +233,9 @@ from `GetPerformanceInfo`, replacing the redundant Free row. Available still
 reports immediately reclaimable physical RAM. Commit's meter uses the current
 commit limit, independently of the swap display scale.
 
-Swap data comes from `EnumPageFilesW`. `swap_max_mib = 0` shows actual used space
-against current page-file allocation. A positive value shows allocated capacity
+Swap data comes from `EnumPageFilesW`. `swap_max_mib = 0` labels the row **Swap used** and shows actual used space
+against current page-file allocation. For example, `78M/5.0G` means 78 MiB used in a 5 GiB pagefile, not a 78 MiB file.
+A positive value labels the row **Swap size** and shows allocated capacity
 against a reference growth ceiling in MiB, never below current allocation.
 This is display-only and does not change Windows paging settings. Determine the
 reference for the target machine rather than copying another PC's scale.
