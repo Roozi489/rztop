@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use super::layout::{ProcColumns, ProcWidgetLayout};
 use super::{ProcColors, ProcFrame};
@@ -359,6 +360,7 @@ mod tests {
         ProcFrame {
             ranking_weights: [1; 5],
             memory_sort_ram: false,
+            io_sort: crate::domain::process::IoSort::Total,
             proc_per_core: true,
             core_count: 4,
             proc_mem_bytes: true,
@@ -374,6 +376,7 @@ mod tests {
         let settings = ProcFrame {
             ranking_weights: [1; 5],
             memory_sort_ram: false,
+            io_sort: crate::domain::process::IoSort::Total,
             proc_per_core: false,
             core_count: 24,
             ..make_frame()
@@ -388,6 +391,7 @@ mod tests {
         let settings = ProcFrame {
             ranking_weights: [1; 5],
             memory_sort_ram: false,
+            io_sort: crate::domain::process::IoSort::Total,
             proc_per_core: true,
             core_count: 24,
             ..make_frame()
@@ -402,6 +406,7 @@ mod tests {
         let settings = ProcFrame {
             ranking_weights: [1; 5],
             memory_sort_ram: false,
+            io_sort: crate::domain::process::IoSort::Total,
             proc_per_core: false,
             core_count: 0,
             ..make_frame()

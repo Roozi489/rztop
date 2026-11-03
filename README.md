@@ -406,7 +406,7 @@ Use rztop --import-config PATH to import an existing rtop TOML file into the new
 
 ### General process I/O
 
-The I/O ranking shows Program, Read/s and Write/s, sorted by combined throughput with PID tie-breaking. These are general Windows process I/O rates (file, network and devices), not physical disk throughput. Rates require two successful samples with matching PID and creation time and use actual elapsed time. Unavailable or invalid samples display N/A after known values. Both values use the CPU gradient relative to the largest combined rate among filtered entries.
+The I/O ranking shows Program, Read/s, Write/s and Total (read + write per second). Total is the default descending sort; click a heading or press I / O / Y to select Read / Write / Total. The arrow marks the selected column and `io_sort` persists it. Ties use PID; unknown values follow known values. Each value uses an absolute CPU-gradient scale from zero to 5,000,000 bytes/s (5 MB/s), clamped at the top; filtering no longer changes the colors. These are general Windows process I/O rates (file, network and devices), not physical disk throughput. Rates require two successful samples with matching PID and creation time and use actual elapsed time. Unavailable or invalid samples display N/A.
 
 ### Mouse controls and resizing
 

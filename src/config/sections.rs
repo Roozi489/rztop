@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Per-subsystem persisted configuration sections.
 //!
@@ -276,6 +277,7 @@ impl Default for NetConfig {
 #[serde(default)]
 pub struct ProcConfig {
     pub memory_sort_ram: bool,
+    pub io_sort: crate::domain::process::IoSort,
     /// Compact CPU, commit size, GPU usage and VRAM rankings.
     #[serde(alias = "proc_dual_view")]
     pub proc_rankings: bool,
@@ -297,6 +299,7 @@ impl Default for ProcConfig {
     fn default() -> Self {
         Self {
             memory_sort_ram: false,
+            io_sort: crate::domain::process::IoSort::Total,
             proc_rankings: true,
             proc_aggregate: false,
             proc_colors: true,

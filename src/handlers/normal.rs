@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Per-action handlers for "normal" (no-overlay) mode and the
 //! Win32 helpers shared by them.
@@ -196,6 +197,16 @@ pub(super) fn toggle_tree_action(ctx: &mut InputContext, _: &Key) {
 
 pub(super) fn memory_sort_action(ctx: &mut InputContext, key: &Key) {
     ctx.config.proc.memory_sort_ram = *key == Key::Char('M');
+    ctx.render.dirty.mark_proc_widget();
+}
+
+pub(super) fn io_sort_action(ctx: &mut InputContext, key: &Key) {
+    use crate::domain::process::IoSort;
+    ctx.config.proc.io_sort = match key {
+        Key::Char('I') => IoSort::Read,
+        Key::Char('O') => IoSort::Write,
+        _ => IoSort::Total,
+    };
     ctx.render.dirty.mark_proc_widget();
 }
 

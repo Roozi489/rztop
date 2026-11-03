@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! The single source of truth for every keybind in the application.
 //!
@@ -232,6 +233,12 @@ pub(crate) static BINDINGS: &[Binding] = &[
         states: NORMAL,
         help: Some(HelpEntry { category: "Process", keys: "M / C", description: "Memory ranking: RAM / Commit" }),
         action: normal::memory_sort_action,
+    },
+    Binding {
+        keys: &[KeySpec::Always(Key::Char('I')), KeySpec::Always(Key::Char('O')), KeySpec::Always(Key::Char('Y'))],
+        states: NORMAL,
+        help: Some(HelpEntry { category: "Process", keys: "I / O / Y", description: "I/O ranking: Read / Write / Total" }),
+        action: normal::io_sort_action,
     },
     Binding {
         keys: &[KeySpec::Always(Key::Char('f')), KeySpec::Always(Key::Char('/'))],

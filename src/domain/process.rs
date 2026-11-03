@@ -1,5 +1,26 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use std::fmt;
+
+/// Persisted descending sort for the general I/O ranking.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IoSort {
+    #[default]
+    Total,
+    Read,
+    Write,
+}
+
+impl IoSort {
+    pub fn value(self, rates: IoRates) -> u64 {
+        match self {
+            Self::Total => rates.total(),
+            Self::Read => rates.read,
+            Self::Write => rates.write,
+        }
+    }
+}
 
 /// Information about a single process.
 #[derive(Debug, Clone)]

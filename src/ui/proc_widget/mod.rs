@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 mod borders;
 mod detail;
@@ -36,6 +37,7 @@ pub(super) const STATE_GRADIENT_EXITED: i32 = 100;
 /// Process widget per-frame view passed to [`draw`].
 pub struct ProcFrame {
     pub memory_sort_ram: bool,
+    pub io_sort: crate::domain::process::IoSort,
     pub ranking_weights: [u64; 5],
     pub proc_per_core: bool,
     pub core_count: usize,
@@ -444,6 +446,7 @@ impl super::Widget for ProcWidget {
         };
         let frame = ProcFrame {
             memory_sort_ram: params.config.proc.memory_sort_ram,
+            io_sort: params.config.proc.io_sort,
             ranking_weights: params.config.resizing.ranking_weights(),
             proc_per_core: params.view.proc_per_core,
             core_count: params.core_count,
@@ -646,6 +649,7 @@ mod tests {
         ProcFrame {
             ranking_weights: [1; 5],
             memory_sort_ram: false,
+            io_sort: crate::domain::process::IoSort::Total,
             proc_per_core: true,
             core_count: 4,
             proc_mem_bytes: true,
@@ -861,6 +865,7 @@ mod tests {
             &ProcFrame {
                 ranking_weights: [1; 5],
                 memory_sort_ram: false,
+                io_sort: crate::domain::process::IoSort::Total,
                 proc_per_core: false,
                 core_count: 4,
                 ..make_frame()

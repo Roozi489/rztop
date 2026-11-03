@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Independent CPU, commit size, GPU usage and VRAM rankings.
 use super::*;
@@ -18,7 +19,7 @@ pub(super) fn draw(
     for (index, title) in [
         "CPU processes",
         "Memory processes",
-        "I/O processes (R+W▼)",
+        "I/O processes",
         "GPU processes",
         "VRAM processes",
     ]
@@ -280,51 +281,59 @@ fn draw_io(
     entries.sort_by(|a, b| {
         let (a, b) = (&procs[a.proc_index], &procs[b.proc_index]);
         b.io_rates
-            .map(|r| r.total())
-            .cmp(&a.io_rates.map(|r| r.total()))
+            .map(|r| settings.io_sort.value(r))
+            .cmp(&a.io_rates.map(|r| settings.io_sort.value(r)))
             .then(a.pid.cmp(&b.pid))
     });
-    let maximum = entries
-        .iter()
-        .filter_map(|e| procs[e.proc_index].io_rates.map(|r| r.total()))
-        .max()
-        .unwrap_or(0);
-    let name_width = area.width.saturating_sub(25);
+    let column_width = (area.width.saturating_sub(5) / 3).min(8);
+    let name_width = area.width.saturating_sub(5 + 3 * column_width);
     let read_x = area.x + 4 + name_width;
-    let write_x = read_x + 10;
+    let write_x = read_x + column_width;
+    let total_x = write_x + column_width;
     buf.mv(area.x + 3, area.y + 2)
         .color(theme.color(tc::TITLE))
         .text(&tools::uresize("Program", name_width));
-    buf.mv(read_x, area.y + 2).text("    Read/s");
-    buf.mv(write_x, area.y + 2).text("   Write/s");
+    use crate::domain::process::IoSort;
+    for (x, label, sort, key) in [
+        (read_x, "Read/s", IoSort::Read, 'I'),
+        (
+            write_x,
+            if column_width < 8 { "W/s" } else { "Write/s" },
+            IoSort::Write,
+            'O',
+        ),
+        (total_x, "Total", IoSort::Total, 'Y'),
+    ] {
+        let label = format!("{label}{}", if settings.io_sort == sort { "▼" } else { "" });
+        buf.mv(x, area.y + 2).text(&crate::draw::controls::button(
+            &tools::rjust(&label, column_width, true),
+            key as u32,
+        ));
+    }
     for (row, entry) in entries
         .iter()
         .take(area.height.saturating_sub(4))
         .enumerate()
     {
         let proc = &procs[entry.proc_index];
-        let color = proc.io_rates.map_or(theme.color(tc::INACTIVE_FG), |rates| {
-            if settings.proc_colors {
-                crate::theme::gradient_color(
-                    theme.gradient(tc::GRAD_CPU_UPPER),
-                    rates
-                        .total()
-                        .saturating_mul(100)
-                        .checked_div(maximum)
-                        .unwrap_or(0)
-                        .min(100) as i32,
-                )
-            } else {
-                theme.color(tc::MAIN_FG)
-            }
-        });
         buf.mv(area.x + 3, area.y + 3 + row)
             .color(theme.color(tc::MAIN_FG))
             .text(&tools::ljust(&proc.name, name_width, true));
         for (x, rate) in [
             (read_x, proc.io_rates.map(|r| r.read)),
             (write_x, proc.io_rates.map(|r| r.write)),
+            (total_x, proc.io_rates.map(|r| r.total())),
         ] {
+            let color = rate.map_or(theme.color(tc::INACTIVE_FG), |value| {
+                if settings.proc_colors {
+                    crate::theme::gradient_color(
+                        theme.gradient(tc::GRAD_CPU_UPPER),
+                        io_color_percent(value),
+                    )
+                } else {
+                    theme.color(tc::MAIN_FG)
+                }
+            });
             let text = rate.map_or_else(
                 || "N/A".into(),
                 |value| {
@@ -336,15 +345,78 @@ fn draw_io(
             );
             buf.mv(x, area.y + 3 + row)
                 .color(color)
-                .text(&tools::rjust(&text, 10, true));
+                .text(&tools::rjust(&text, column_width, true));
         }
     }
+}
+
+fn io_color_percent(bytes_per_second: u64) -> i32 {
+    (bytes_per_second.saturating_mul(100) / 5_000_000).min(100) as i32
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::tests::{make_frame, make_view, strip_ansi};
     use super::*;
+    #[test]
+    fn io_scale_is_absolute_and_clamped() {
+        assert_eq!(io_color_percent(0), 0);
+        assert_eq!(io_color_percent(700_000), 14);
+        assert_eq!(io_color_percent(2_500_000), 50);
+        assert_eq!(io_color_percent(5_000_000), 100);
+        assert_eq!(io_color_percent(u64::MAX), 100);
+    }
+
+    #[test]
+    fn io_columns_sort_independently_and_persist_selection() {
+        use crate::domain::process::{IoRates, IoSort};
+        let procs: Vec<_> = [("reader", 90, 0), ("writer", 0, 100), ("total", 60, 60)]
+            .into_iter()
+            .enumerate()
+            .map(|(pid, (name, read, write))| ProcInfo {
+                pid: pid as u32,
+                name: name.into(),
+                io_rates: Some(IoRates { read, write }),
+                ..Default::default()
+            })
+            .collect();
+        let area = WidgetArea {
+            x: 0,
+            y: 0,
+            width: 44,
+            height: 9,
+            rounded: false,
+        };
+        for (sort, first, second, marker) in [
+            (IoSort::Total, "total", "writer", "Total▼"),
+            (IoSort::Read, "reader", "total", "Read/s▼"),
+            (IoSort::Write, "writer", "total", "Write/s▼"),
+        ] {
+            let mut frame = make_frame();
+            frame.io_sort = sort;
+            let mut buf = AnsiBuffer::new();
+            draw_io(
+                &mut buf,
+                &procs,
+                &area,
+                &Theme::default(),
+                &frame,
+                &make_view(),
+            );
+            let raw = buf.finish();
+            let output = strip_ansi(&raw);
+            assert!(output.contains(marker));
+            assert!(output.find(first).unwrap() < output.find(second).unwrap());
+            for key in ['I', 'O', 'Y'] {
+                assert!(raw.contains(&format!("\x1b[777;{}z", key as u32)));
+            }
+            let mut config = crate::config::Config::new();
+            config.proc.io_sort = sort;
+            let loaded: crate::config::Config =
+                toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+            assert_eq!(loaded.proc.io_sort, sort);
+        }
+    }
     #[test]
     fn ram_selection_and_io_known_zero_precede_unknown() {
         let procs = vec![
