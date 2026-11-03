@@ -419,3 +419,7 @@ Divider hover uses `=` horizontally and `║` vertically. Paired arrows follow t
 ### rztop CPU usage
 
 The statusbar shows rztop's own CPU percentage as `rztop CPU x.x%` before uptime, using the existing live process collector even when rankings are paused or filtered. It is a percentage of total machine CPU capacity. The additional item is omitted when space is tight so it does not increase the minimum terminal width or overlap controls.
+
+### Permission status
+
+The statusbar shows `not admin: limited data` when Windows confirms rztop is not elevated and a process, pagefile, or PawnIO device query has reported access denied. The notice remains for the session because hardware discovery can fail only once at startup. Missing drivers, unsupported sensors and unknown elevation state alone do not trigger it. Running as administrator may allow more readings, but does not guarantee access to protected processes. rztop never elevates itself automatically. The notice takes priority over optional right-side status items when space is tight; it never overwrites controls.

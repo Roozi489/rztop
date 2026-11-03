@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 //! Collects uptime and ping at the global app refresh interval.
 
 use super::Collector;
@@ -5,6 +6,7 @@ use super::Collector;
 /// Statusbar snapshot data, cached at 1 Hz.
 #[derive(Debug, Clone, Default)]
 pub struct StatusbarInfo {
+    pub admin_limited: bool,
     /// System uptime in seconds since boot.
     pub uptime_seconds: u64,
     pub ping: String,
@@ -38,6 +40,7 @@ impl Collector for StatusbarCollector {
     type Snapshot = crate::runner::StatusbarSnapshot;
 
     fn collect(&mut self) {
+        self.info.admin_limited = super::permissions::limited_without_admin();
         self.info.uptime_seconds = crate::tools::system_uptime_secs();
         self.info.ping = (self.probe)(&self.ping_target);
         let sample = self

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::domain::process::{PriorityClass, ProcInfo, ProcState};
 use std::{
@@ -517,6 +518,7 @@ fn get_process_details(
     // values are checked. The handle is closed by OwnedHandle on all paths.
     unsafe {
         if let Some(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+            .inspect_err(super::permissions::note_error)
             .ok()
             .and_then(OwnedHandle::new)
         {
@@ -555,6 +557,7 @@ fn get_process_details(
                 (&mut mem_counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast(),
                 mem_counters.cb,
             )
+            .inspect_err(super::permissions::note_error)
             .is_ok()
             {
                 details.mem = mem_counters.PrivateUsage as u64;
@@ -565,7 +568,10 @@ fn get_process_details(
             // with PROCESS_QUERY_LIMITED_INFORMATION, so a failure leaves
             // the counters at zero rather than dropping the process.
             let mut io = IO_COUNTERS::default();
-            if GetProcessIoCounters(handle.get(), &mut io).is_ok() {
+            if GetProcessIoCounters(handle.get(), &mut io)
+                .inspect_err(super::permissions::note_error)
+                .is_ok()
+            {
                 details.io_read = io.ReadTransferCount;
                 details.io_write = io.WriteTransferCount;
                 details.io_sample = created.map(|created| IoSample {

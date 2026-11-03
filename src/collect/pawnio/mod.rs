@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 //! PawnIO kernel driver client.
 //!
 //! PawnIO (`PawnIO.sys`, https://pawnio.eu) is a signed Windows kernel
@@ -166,6 +167,7 @@ fn open_device() -> Result<OwnedHandle, Error> {
             None,
         )
     }
+    .inspect_err(crate::collect::permissions::note_error)
     .map_err(|_| Error::DeviceUnavailable)?;
 
     OwnedHandle::new(raw).ok_or(Error::DeviceUnavailable)

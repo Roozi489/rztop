@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Statusbar widget renderer.
 //!
@@ -48,6 +49,7 @@ use super::WidgetArea;
 /// All values come from `RenderParams`; widths come pre-computed
 /// on `LayoutHints` so the widget never re-derives them.
 pub struct StatusbarFrame<'a> {
+    pub admin_limited: bool,
     pub self_cpu: &'a str,
     pub show_menu: bool,
     pub show_preset: bool,
@@ -186,7 +188,22 @@ pub fn draw(area: &WidgetArea, theme: &Theme, frame: &StatusbarFrame) -> String 
         };
         (right_text, right_visible_width) = render_right(&compact, &bg, fg, sep);
     }
-    if right_visible_width > 0 && right_visible_width + RIGHT_PAD <= area.width {
+    // Keep the permission notice ahead of optional uptime/clock on narrow screens.
+    if frame.admin_limited
+        && LEFT_PAD + left_visible_width + 1 + right_visible_width + RIGHT_PAD > area.width
+    {
+        let compact = StatusbarFrame {
+            ping: "",
+            self_cpu: "",
+            show_uptime: false,
+            show_clock: false,
+            ..*frame
+        };
+        (right_text, right_visible_width) = render_right(&compact, &bg, fg, sep);
+    }
+    if right_visible_width > 0
+        && LEFT_PAD + left_visible_width + 1 + right_visible_width + RIGHT_PAD <= area.width
+    {
         let right_x = start_x + area.width - right_visible_width - RIGHT_PAD;
         buf.mv(right_x, row).text(&bg).text(fg).text(&right_text);
     }
@@ -241,6 +258,10 @@ fn render_left(frame: &StatusbarFrame, bg: &str, fg: &str, hi: &str, sep: &str) 
 /// the width.
 fn render_right(frame: &StatusbarFrame, bg: &str, fg: &str, sep: &str) -> (String, usize) {
     let mut items: Vec<(String, usize)> = Vec::new();
+    if frame.admin_limited {
+        let label = "not admin: limited data";
+        items.push((label.into(), tools::ulen(label)));
+    }
     if !frame.ping.is_empty() {
         items.push((frame.ping.to_string(), tools::ulen(frame.ping)));
     }
@@ -414,6 +435,7 @@ impl super::Widget for StatusbarWidget {
                 |p| format!("rztop CPU {:.1}%", p.cpu_p),
             );
         let frame = StatusbarFrame {
+            admin_limited: params.statusbar.is_some_and(|s| s.info.admin_limited),
             self_cpu: &self_cpu,
             show_menu: params.config.statusbar.statusbar_show_menu,
             show_preset: params.config.statusbar.statusbar_show_preset,
@@ -444,6 +466,20 @@ fn sum_bracketed(items: &[usize]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn permission_notice_is_conditional_and_kept_before_optional_clock() {
+        let mut frame = full_frame();
+        frame.admin_limited = true;
+        frame.clock_format = "%T";
+        frame.self_cpu = "rztop CPU 1.2%";
+        let theme = Theme::default();
+        let output = strip_ansi(&draw(&area(80), &theme, &frame));
+        assert!(output.contains("not admin: limited data"));
+        assert!(output.contains("menu"));
+        frame.admin_limited = false;
+        let output = strip_ansi(&draw(&area(80), &theme, &frame));
+        assert!(!output.contains("not admin"));
+    }
     use super::*;
     use crate::draw::layout::LayoutHints;
     use crate::theme::Theme;
@@ -493,6 +529,7 @@ mod tests {
 
     fn full_frame<'a>() -> StatusbarFrame<'a> {
         StatusbarFrame {
+            admin_limited: false,
             self_cpu: "",
             show_menu: true,
             show_preset: true,

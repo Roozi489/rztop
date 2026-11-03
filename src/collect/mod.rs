@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 pub(crate) mod counters;
 pub mod cpu;
 pub(crate) mod cpu_thermal;
@@ -6,6 +7,7 @@ pub mod gpu;
 pub mod memory;
 pub mod network;
 pub(crate) mod pawnio;
+pub(crate) mod permissions;
 pub mod process;
 pub mod process_display;
 mod process_gpu;

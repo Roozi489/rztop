@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 use crate::domain::memory::MemInfo;
 use std::collections::VecDeque;
 
@@ -87,6 +88,7 @@ impl MemCollector {
                     Some(sum_page_file),
                     (&mut pages as *mut PageFilePages).cast(),
                 )
+                .inspect_err(super::permissions::note_error)
                 .is_ok()
                 {
                     let (total, used, free) = pages.bytes(perf.PageSize as u64);
