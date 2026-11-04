@@ -42,6 +42,8 @@ use std::{
 /// Bumped whenever panels are added, so an older saved arrangement
 /// cannot hide the new panels.
 const LAYOUT: &str = "dock-layout-v3";
+/// Storage key of the layout kept with `[layout save]`.
+const SAVED_LAYOUT: &str = "saved-layout-v1";
 /// Height of one text, meter or core row.
 const ROW: f32 = 18.0;
 /// Spacing between graph dots, horizontally and vertically.
@@ -572,6 +574,22 @@ struct Desktop {
     fitting: u8,
     /// The tab being dragged, which egui_dock draws on a floating layer.
     dragged: Option<Panel>,
+    /// The layout and window placement stored with `[layout save]`.
+    saved: Option<SavedLayout>,
+    /// Write `saved` to storage at the end of this frame.
+    store_saved: bool,
+}
+
+/// A layout the user chose to keep, with the window's position and size, so
+/// `[layout load]` can return to it after experiments. The current layout is
+/// still remembered across restarts separately.
+#[derive(Clone, Serialize, Deserialize)]
+struct SavedLayout {
+    dock: DockState<Panel>,
+    /// Outer top-left corner of the window, in points.
+    position: Option<[f32; 2]>,
+    /// Inner (client) size of the window, in points.
+    size: Option<[f32; 2]>,
 }
 
 impl Desktop {
@@ -594,7 +612,7 @@ impl Desktop {
         }
     }
 
-    /// `[reset] [- 1000ms +]  drag hint … [not admin] [rztop CPU] [up] [clock]`.
+    /// `[layout save load reset] [- 1000ms +] … [not admin] [rztop CPU] [up] [clock]`.
     fn status_bar(&mut self, ui: &mut Ui, sample: Option<&Sample>, status: Option<&StatusbarInfo>) {
         let look = &self.look;
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -618,11 +636,28 @@ impl Desktop {
             ui.add_space(6.0);
             clicked
         };
-        let mut reset = false;
+        let mut layout_action = None;
         let mut elevate = false;
         let mut step = None;
+        let has_saved = self.saved.is_some();
         ui.horizontal(|ui| {
-            reset = chip(ui, &[("reset layout", look.statusbar_hi, true)]).is_some();
+            // `[layout save load reset]`; load is dimmed until something is saved.
+            let load = if has_saved {
+                look.statusbar_hi
+            } else {
+                look.dim
+            };
+            layout_action = chip(
+                ui,
+                &[
+                    ("layout ", look.statusbar_fg, false),
+                    ("save", look.statusbar_hi, true),
+                    (" ", look.statusbar_fg, false),
+                    ("load", load, has_saved),
+                    (" ", look.statusbar_fg, false),
+                    ("reset", look.statusbar_hi, true),
+                ],
+            );
             let ms = self.monitor.interval.load(Relaxed);
             let rate = format!(" {ms}ms ");
             step = chip(
@@ -633,7 +668,6 @@ impl Desktop {
                     ("+", look.statusbar_hi, true),
                 ],
             );
-            ui.label(text("drag a caption to dock", look.dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Right-to-left: the first item drawn is the rightmost. Each item is
                 // one label so the layout direction cannot reorder its brackets.
@@ -674,9 +708,35 @@ impl Desktop {
                 }
             });
         });
-        if reset {
-            self.dock = initial_layout();
-            self.fitting = FIT_FRAMES;
+        let ctx = ui.ctx().clone();
+        match layout_action {
+            Some(1) => {
+                let (outer, inner) =
+                    ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect));
+                self.saved = Some(SavedLayout {
+                    dock: self.dock.clone(),
+                    position: outer.map(|r| [r.min.x, r.min.y]),
+                    size: inner.map(|r| [r.width(), r.height()]),
+                });
+                self.store_saved = true;
+                ctx.request_repaint();
+            }
+            Some(3) => {
+                if let Some(saved) = &self.saved {
+                    self.dock = saved.dock.clone();
+                    if let Some([x, y]) = saved.position {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos2(x, y)));
+                    }
+                    if let Some([w, h]) = saved.size {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(w, h)));
+                    }
+                }
+            }
+            Some(5) => {
+                self.dock = initial_layout();
+                self.fitting = FIT_FRAMES;
+            }
+            _ => {}
         }
         // Closing saves the layout, so the elevated instance reopens it. If the
         // UAC prompt is declined this instance simply keeps running.
@@ -693,7 +753,14 @@ impl Desktop {
 }
 
 impl eframe::App for Desktop {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if std::mem::take(&mut self.store_saved)
+            && let (Some(storage), Some(saved)) = (frame.storage_mut(), &self.saved)
+        {
+            // Written straight away rather than at the next autosave or exit.
+            eframe::set_value(storage, SAVED_LAYOUT, saved);
+            storage.flush();
+        }
         let sample = self.monitor.latest.latest();
         if !ctx.input(|i| i.pointer.primary_down()) {
             self.dragged = None;
@@ -2182,14 +2249,19 @@ pub fn run_desktop() -> eframe::Result {
                 s.visuals.override_text_color = Some(look.fg);
                 s.spacing.item_spacing = egui::vec2(4.0, 2.0);
             });
-            let saved = cc
+            let last = cc
                 .storage
                 .and_then(|storage| eframe::get_value(storage, LAYOUT));
+            let saved = cc
+                .storage
+                .and_then(|storage| eframe::get_value::<SavedLayout>(storage, SAVED_LAYOUT));
             // A first run fits the default layout like Reset layout does.
-            let fitting = if saved.is_some() { 0 } else { FIT_FRAMES };
-            let dock = saved.unwrap_or_else(initial_layout);
+            let fitting = if last.is_some() { 0 } else { FIT_FRAMES };
+            let dock = last.unwrap_or_else(initial_layout);
             Ok(Box::new(Desktop {
                 dock,
+                saved,
+                store_saved: false,
                 monitor: Monitor::new(cc.egui_ctx.clone(), interval_ms),
                 gpu: 0,
                 net,
