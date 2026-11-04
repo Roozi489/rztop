@@ -2000,9 +2000,16 @@ impl Panels<'_> {
                 .flatten()
         });
         let mut arrow = |x: f32, glyph: &str, delta: usize| {
-            let rect = painter.text(pos2(x, cy), Align2::RIGHT_CENTER, glyph, mono(), look.label);
-            if click.is_some_and(|p| rect.expand(3.0).contains(p)) {
+            let rect = painter
+                .text(pos2(x, cy), Align2::RIGHT_CENTER, glyph, mono(), look.label)
+                .expand(3.0);
+            if click.is_some_and(|p| rect.contains(p)) {
                 step = Some(delta);
+            }
+            // Override the tab's grab cursor: this spot is a button, not a handle.
+            let ctx = &response.ctx;
+            if ctx.pointer_hover_pos().is_some_and(|p| rect.contains(p)) {
+                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
             }
         };
         if arrows {
