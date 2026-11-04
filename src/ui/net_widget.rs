@@ -330,8 +330,8 @@ pub fn draw(
 
         if !display_name.is_empty() {
             let previous =
-                crate::draw::controls::button(&format!("← {hi}<{title_color}"), 'b' as u32);
-            let next = crate::draw::controls::button(&format!("{hi}>{title_color} →"), 'n' as u32);
+                crate::draw::controls::button(&format!("← {hi}<{title_color}"), '<' as u32);
+            let next = crate::draw::controls::button(&format!("{hi}>{title_color} →"), '>' as u32);
             let chip_text = if link_in_chip {
                 format!("{previous} {display_name} ({link_str}) {next}")
             } else {
@@ -458,6 +458,32 @@ impl super::Widget for NetWidget {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn device_arrows_have_click_targets_on_both_glyphs() {
+        let area = make_area();
+        let raw = draw(
+            &make_net_info(),
+            &area,
+            &Theme::default(),
+            &make_frame(),
+            &CollectStatus::Ok,
+        );
+        let mut screen = crate::draw::controls::Screen::default();
+        screen.valid = true;
+        screen.output(&raw);
+        for key in ['<', '>'] {
+            let cells: Vec<_> = (1..=area.x + area.width)
+                .filter(|&x| screen.control_at(x, area.y + 1) == Some(key as u32))
+                .collect();
+            assert_eq!(
+                cells.len(),
+                3,
+                "arrow, space and shortcut must all be clickable"
+            );
+            screen.pointer = Some((cells[0], area.y + 1));
+            assert!(screen.output(&raw).contains(crate::term::UNDERLINE));
+        }
+    }
     use super::*;
     use crate::domain::network::{NetBandwidth, NetStat, NetStatPair};
     use std::collections::VecDeque;

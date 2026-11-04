@@ -244,11 +244,7 @@ pub fn draw(
         let swap_str = tools::floating_humanizer(swap_value, true, 0, false, false, frame.base_10);
         let max_str = tools::floating_humanizer(swap_total, true, 0, false, false, frame.base_10);
         let value = format!(" {swap_str}/{max_str}");
-        let swap_label = if frame.config.swap_max_mib > 0 {
-            "Swap size "
-        } else {
-            "Swap used "
-        };
+        let swap_label = "Swap  ";
         let swap_meter = Meter::new(
             inner_w.saturating_sub(tools::ulen(swap_label) + tools::ulen(&value)),
             used_grad,
@@ -516,7 +512,7 @@ mod tests {
                 "{} {expected}",
                 theme.gradient(tc::GRAD_USED)[pct]
             )));
-            assert!(output.contains("Swap size "));
+            assert!(output.contains("Swap  "));
         }
     }
 
@@ -538,7 +534,7 @@ mod tests {
             },
             &CollectStatus::Ok,
         );
-        assert!(output.contains("Swap used "));
+        assert!(output.contains("Swap  "));
         assert!(output.contains("78M/5.0G"));
     }
 
@@ -562,7 +558,7 @@ mod tests {
             &CollectStatus::Ok,
         );
         let fg = theme.color(tc::MAIN_FG);
-        for label in &["Used  ", "Avail ", "Cache ", "Commit", "Swap used "] {
+        for label in &["Used  ", "Avail ", "Cache ", "Commit", "Swap  "] {
             assert!(
                 output.contains(&format!("{fg}{label}")),
                 "mem label {label:?} should be preceded by MAIN_FG"

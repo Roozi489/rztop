@@ -218,6 +218,7 @@ pub(super) fn toggle_reverse_action(ctx: &mut InputContext, _: &Key) {
 pub(super) fn toggle_per_core_action(ctx: &mut InputContext, _: &Key) {
     ctx.view.proc_per_core = !ctx.view.proc_per_core;
     ctx.render.dirty.mark_proc_data_changed();
+    ctx.render.dirty.mark_widget(WidgetKind::Statusbar);
 }
 
 pub(super) fn toggle_io_action(ctx: &mut InputContext, _: &Key) {

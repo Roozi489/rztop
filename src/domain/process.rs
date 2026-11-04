@@ -183,6 +183,25 @@ impl fmt::Display for PriorityClass {
     }
 }
 
+/// Display process CPU using either one-core or total-machine capacity.
+pub fn display_cpu_percent(cpu_per_core: f64, core_count: usize, per_core: bool) -> f64 {
+    if !cpu_per_core.is_finite() {
+        return 0.0;
+    }
+    let core_count = core_count.max(1);
+    let value = if per_core {
+        cpu_per_core
+    } else {
+        cpu_per_core / core_count as f64
+    };
+    let max_value = if per_core {
+        100.0 * core_count as f64
+    } else {
+        100.0
+    };
+    value.clamp(0.0, max_value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -432,7 +432,7 @@ impl super::Widget for StatusbarWidget {
             .and_then(|snapshot| snapshot.procs.iter().find(|p| p.pid == std::process::id()))
             .map_or_else(
                 || "rztop CPU N/A".into(),
-                |p| format!("rztop CPU {:.1}%", p.cpu_p),
+                |p| self_cpu_label(p.cpu_p, params.core_count, params.view.proc_per_core),
             );
         let frame = StatusbarFrame {
             admin_limited: params.statusbar.is_some_and(|s| s.info.admin_limited),
@@ -454,6 +454,13 @@ impl super::Widget for StatusbarWidget {
     }
 }
 
+fn self_cpu_label(raw_cpu: f64, core_count: usize, per_core: bool) -> String {
+    format!(
+        "rztop CPU {:.1}%",
+        crate::domain::process::display_cpu_percent(raw_cpu, core_count, per_core)
+    )
+}
+
 /// Width of a section composed of bracketed items joined by
 /// single spaces: each item contributes `content + BRACKET_WIDTH`
 /// cells, and there's an `ITEM_GAP` between every adjacent pair.
@@ -466,6 +473,13 @@ fn sum_bracketed(items: &[usize]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn self_cpu_label_follows_process_cpu_scale() {
+        assert_eq!(self_cpu_label(15.6, 16, false), "rztop CPU 1.0%");
+        assert_eq!(self_cpu_label(15.6, 16, true), "rztop CPU 15.6%");
+        assert_eq!(self_cpu_label(240.0, 16, true), "rztop CPU 240.0%");
+        assert_eq!(self_cpu_label(f64::NAN, 0, false), "rztop CPU 0.0%");
+    }
     #[test]
     fn permission_notice_is_conditional_and_kept_before_optional_clock() {
         let mut frame = full_frame();

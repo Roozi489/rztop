@@ -259,21 +259,11 @@ fn draw_process_name_padding(buf: &mut AnsiBuffer, row: &RowText<'_>, name_w: us
 }
 
 pub(super) fn display_proc_cpu(cpu_per_core: f64, settings: &ProcFrame) -> f64 {
-    if !cpu_per_core.is_finite() {
-        return 0.0;
-    }
-    let core_count = settings.core_count.max(1);
-    let value = if settings.proc_per_core {
-        cpu_per_core
-    } else {
-        cpu_per_core / core_count as f64
-    };
-    let max_value = if settings.proc_per_core {
-        100.0 * core_count as f64
-    } else {
-        100.0
-    };
-    value.clamp(0.0, max_value)
+    crate::domain::process::display_cpu_percent(
+        cpu_per_core,
+        settings.core_count,
+        settings.proc_per_core,
+    )
 }
 
 /// Percentage of total physical memory held by a process, clamped to
