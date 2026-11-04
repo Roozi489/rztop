@@ -1,8 +1,13 @@
-use crate::domain::process::IoSort;
 use crate::{
     collect::{
-        Collector, cpu::CpuCollector, disk::DiskCollector, gpu::GpuCollector, memory::MemCollector,
+        Collector,
+        cpu::CpuCollector,
+        disk::DiskCollector,
+        gpu::GpuCollector,
+        memory::MemCollector,
+        network::NetCollector,
         process::ProcCollector,
+        statusbar::{StatusbarCollector, StatusbarInfo},
     },
     config::Config,
     domain::{
@@ -11,7 +16,8 @@ use crate::{
         disk::{DiskFilter, DiskInfo},
         gpu::GpuInfo,
         memory::MemInfo,
-        process::ProcInfo,
+        network::NetInfo,
+        process::{IoSort, ProcInfo},
     },
     runner::LatestSlot,
     themes::{GradientDef, Rgb},
@@ -24,15 +30,18 @@ use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering::Relaxed},
+        mpsc,
+    },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-const TICK: Duration = Duration::from_secs(1);
 /// Bumped whenever panels are added, so an older saved arrangement
 /// cannot hide the new panels.
-const LAYOUT: &str = "dock-layout-v2";
+const LAYOUT: &str = "dock-layout-v3";
 /// Height of one text, meter or core row.
 const ROW: f32 = 18.0;
 /// Spacing between graph dots, horizontally and vertically.
@@ -48,6 +57,7 @@ enum Panel {
     Io,
     Mem,
     Disk,
+    Net,
     CpuProcs,
     MemProcs,
     GpuProcs,
@@ -55,12 +65,13 @@ enum Panel {
 }
 
 impl Panel {
-    const ALL: [Panel; 9] = [
+    const ALL: [Panel; 10] = [
         Panel::Cpu,
         Panel::Gpu,
         Panel::Io,
         Panel::Mem,
         Panel::Disk,
+        Panel::Net,
         Panel::CpuProcs,
         Panel::MemProcs,
         Panel::GpuProcs,
@@ -75,8 +86,9 @@ fn initial_layout() -> DockState<Panel> {
     let tree = dock.main_surface_mut();
     let [_, gpu] = tree.split_below(NodeIndex::root(), 0.33, vec![Panel::Gpu]);
     let [gpu, procs] = tree.split_right(gpu, 0.5, vec![Panel::CpuProcs]);
-    let [_, mem] = tree.split_below(gpu, 0.34, vec![Panel::Mem]);
-    tree.split_below(mem, 0.62, vec![Panel::Disk]);
+    let [_, mem] = tree.split_below(gpu, 0.25, vec![Panel::Mem]);
+    let [_, net] = tree.split_below(mem, 0.38, vec![Panel::Net]);
+    tree.split_below(net, 0.68, vec![Panel::Disk]);
     let [_, rest] = tree.split_below(procs, 0.2, vec![Panel::MemProcs]);
     let [_, rest] = tree.split_below(rest, 0.25, vec![Panel::Io]);
     let [_, rest] = tree.split_below(rest, 1.0 / 3.0, vec![Panel::GpuProcs]);
@@ -142,6 +154,17 @@ struct Look {
     per_core: bool,
     base_10: bool,
     disk_filter: DiskFilter,
+    download: Gradient,
+    upload: Gradient,
+    hi: Color32,
+    statusbar_bg: Color32,
+    statusbar_fg: Color32,
+    statusbar_hi: Color32,
+    statusbar_sep: Color32,
+    /// Fixed graph scales used when network auto-scaling is off.
+    net_download: i64,
+    net_upload: i64,
+    clock_format: String,
 }
 
 impl Look {
@@ -177,6 +200,16 @@ impl Look {
             per_core: config.view.proc_per_core,
             base_10: config.ui.base_10_sizes,
             disk_filter: DiskFilter::parse(&config.disk.disk_filter),
+            download: Gradient::new(&g.download),
+            upload: Gradient::new(&g.upload),
+            hi: rgb(c.hi_fg),
+            statusbar_bg: rgb(c.statusbar_bg),
+            statusbar_fg: rgb(c.statusbar_fg),
+            statusbar_hi: rgb(c.statusbar_hi),
+            statusbar_sep: rgb(c.statusbar_sep),
+            net_download: config.net.net_download,
+            net_upload: config.net.net_upload,
+            clock_format: config.statusbar.statusbar_clock_format.clone(),
         }
     }
 
@@ -200,98 +233,281 @@ struct Sample {
     mem: MemInfo,
     disks: Vec<DiskInfo>,
     procs: Vec<ProcInfo>,
+    nets: Vec<NetInfo>,
 }
 
+/// Run `step` every `interval` milliseconds on a background thread,
+/// publishing each result and repainting, until `stop` fires. `make`
+/// builds the collectors on the worker thread itself.
+fn spawn_worker<S, T: Send + Sync + 'static>(
+    ctx: egui::Context,
+    slot: LatestSlot<T>,
+    interval: Arc<AtomicU64>,
+    stop: mpsc::Receiver<()>,
+    make: impl FnOnce() -> S + Send + 'static,
+    mut step: impl FnMut(&mut S) -> T + Send + 'static,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut state = make();
+        loop {
+            let start = Instant::now();
+            slot.publish(step(&mut state));
+            ctx.request_repaint();
+            let period = Duration::from_millis(interval.load(Relaxed));
+            if stop.recv_timeout(period.saturating_sub(start.elapsed()))
+                != Err(mpsc::RecvTimeoutError::Timeout)
+            {
+                break;
+            }
+        }
+    })
+}
+
+/// Background sampling. Ping can block for its whole timeout, so the
+/// statusbar collector runs on its own thread, as in the terminal frontend.
 struct Monitor {
     latest: LatestSlot<Sample>,
-    stop: mpsc::Sender<()>,
-    worker: Option<JoinHandle<()>>,
+    status: LatestSlot<StatusbarInfo>,
+    /// Shared refresh interval in milliseconds, changed from the statusbar.
+    interval: Arc<AtomicU64>,
+    stops: Vec<mpsc::Sender<()>>,
+    workers: Vec<JoinHandle<()>>,
 }
 
 impl Monitor {
-    fn new(ctx: egui::Context) -> Self {
+    fn new(ctx: egui::Context, interval_ms: u64) -> Self {
         let latest = LatestSlot::new();
-        let slot = latest.clone();
-        let (stop, rx) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            let mut cpu = CpuCollector::new();
-            let mut gpu = GpuCollector::new();
-            let mut mem = MemCollector::new();
-            let mut disk = DiskCollector::new();
-            let mut processes = ProcCollector::new();
-            processes.set_core_count(crate::collect::cpu::get_core_count());
-            loop {
-                let start = std::time::Instant::now();
+        let status = LatestSlot::new();
+        let interval = Arc::new(AtomicU64::new(interval_ms));
+        let (stop_sample, rx_sample) = mpsc::channel();
+        let (stop_status, rx_status) = mpsc::channel();
+        let sampler = spawn_worker(
+            ctx.clone(),
+            latest.clone(),
+            interval.clone(),
+            rx_sample,
+            || {
+                let mut processes = ProcCollector::new();
+                processes.set_core_count(crate::collect::cpu::get_core_count());
+                (
+                    CpuCollector::new(),
+                    GpuCollector::new(),
+                    MemCollector::new(),
+                    DiskCollector::new(),
+                    NetCollector::new(),
+                    processes,
+                )
+            },
+            |(cpu, gpu, mem, disk, net, processes)| {
                 cpu.collect();
                 gpu.collect();
                 mem.collect();
                 disk.collect();
+                net.collect();
                 processes.collect();
-                slot.publish(Sample {
+                Sample {
                     cpu: cpu.snapshot().info,
                     gpus: gpu.snapshot().devices,
                     mem: mem.snapshot().info,
                     disks: disk.snapshot().info.disks,
                     procs: processes.snapshot().procs,
-                });
-                ctx.request_repaint();
-                if rx.recv_timeout(TICK.saturating_sub(start.elapsed()))
-                    != Err(mpsc::RecvTimeoutError::Timeout)
-                {
-                    break;
+                    nets: net.snapshot().nets,
                 }
-            }
-        });
+            },
+        );
+        let statusbar = spawn_worker(
+            ctx,
+            status.clone(),
+            interval.clone(),
+            rx_status,
+            StatusbarCollector::new,
+            |collector| {
+                collector.collect();
+                collector.snapshot().info
+            },
+        );
         Self {
             latest,
-            stop,
-            worker: Some(worker),
+            status,
+            interval,
+            stops: vec![stop_sample, stop_status],
+            workers: vec![sampler, statusbar],
         }
     }
 }
 
 impl Drop for Monitor {
     fn drop(&mut self) {
-        let _ = self.stop.send(());
-        if let Some(worker) = self.worker.take() {
+        for stop in &self.stops {
+            let _ = stop.send(());
+        }
+        for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
     }
+}
+
+/// Same steps and bounds as the terminal's `-` / `+` refresh keys.
+fn step_interval(ms: u64, up: bool) -> u64 {
+    let step = if ms > 2000 { 1000 } else { 100 };
+    let next = if up {
+        ms.saturating_add(step)
+    } else {
+        ms.saturating_sub(step)
+    };
+    next.clamp(100, 86_400_000)
+}
+
+/// Selected network adapter and the graph scaling toggles.
+struct NetView {
+    selected: String,
+    auto: bool,
+    sync: bool,
 }
 
 struct Desktop {
     monitor: Monitor,
     dock: DockState<Panel>,
     gpu: usize,
+    net: NetView,
     sorts: Sorts,
     look: Look,
 }
 
-impl eframe::App for Desktop {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(text("rztop", self.look.cpu_upper.at(0)));
-                ui.label(text("Drag a caption to dock", self.look.label));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("Reset layout").clicked() {
-                        self.dock = initial_layout();
+impl Desktop {
+    /// `[reset] [- 1000ms +]  drag hint … [not admin] [rztop CPU] [up] [clock]`.
+    fn status_bar(&mut self, ui: &mut Ui, sample: Option<&Sample>, status: Option<&StatusbarInfo>) {
+        let look = &self.look;
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let chip = |ui: &mut Ui, parts: &[(&str, Color32, bool)]| -> Option<usize> {
+            let mut clicked = None;
+            ui.label(text("[", look.statusbar_sep));
+            for (i, (part, color, clickable)) in parts.iter().enumerate() {
+                let label = egui::Label::new(text(*part, *color)).selectable(false);
+                if *clickable {
+                    let response = ui
+                        .add(label.sense(Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if response.clicked() {
+                        clicked = Some(i);
                     }
+                } else {
+                    ui.add(label);
+                }
+            }
+            ui.label(text("]", look.statusbar_sep));
+            ui.add_space(6.0);
+            clicked
+        };
+        let mut reset = false;
+        let mut step = None;
+        ui.horizontal(|ui| {
+            reset = chip(ui, &[("reset layout", look.statusbar_hi, true)]).is_some();
+            let ms = self.monitor.interval.load(Relaxed);
+            let rate = format!(" {ms}ms ");
+            step = chip(
+                ui,
+                &[
+                    ("-", look.statusbar_hi, true),
+                    (&rate, look.statusbar_fg, false),
+                    ("+", look.statusbar_hi, true),
+                ],
+            );
+            ui.label(text("drag a caption to dock", look.dim));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Right-to-left: the first item drawn is the rightmost. Each item is
+                // one label so the layout direction cannot reorder its brackets.
+                let item = |ui: &mut Ui, body: &str| {
+                    let mut job = egui::text::LayoutJob::default();
+                    for (part, color) in [
+                        ("[", look.statusbar_sep),
+                        (body, look.statusbar_fg),
+                        ("]", look.statusbar_sep),
+                    ] {
+                        job.append(
+                            part,
+                            0.0,
+                            egui::TextFormat {
+                                font_id: mono(),
+                                color,
+                                ..Default::default()
+                            },
+                        );
+                    }
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(job).selectable(false));
+                };
+                let clock = crate::tools::format_clock(&look.clock_format);
+                if !clock.is_empty() {
+                    item(ui, &clock);
+                }
+                if let Some(status) = status {
+                    item(
+                        ui,
+                        &crate::ui::statusbar_widget::uptime_label(status.uptime_seconds),
+                    );
+                }
+                let own = sample.and_then(|s| {
+                    let me = s.procs.iter().find(|p| p.pid == std::process::id())?;
+                    let pct = crate::domain::process::display_cpu_percent(
+                        me.cpu_p,
+                        s.cpu.core_count,
+                        look.per_core,
+                    );
+                    Some(format!("{pct:.1}%"))
                 });
+                let own = format!("rztop CPU {}", own.as_deref().unwrap_or("N/A"));
+                item(ui, &own);
+                if status.is_some_and(|s| s.admin_limited) {
+                    ui.add_space(6.0);
+                    ui.label(text("not admin: limited data", look.hi));
+                }
             });
         });
+        if reset {
+            self.dock = initial_layout();
+        }
+        if let Some(i) = step {
+            let ms = self.monitor.interval.load(Relaxed);
+            self.monitor
+                .interval
+                .store(step_interval(ms, i == 2), Relaxed);
+        }
+    }
+}
+
+impl eframe::App for Desktop {
+    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        let sample = self.monitor.latest.latest();
+        let status = self.monitor.status.latest();
+        egui::TopBottomPanel::bottom("status")
+            .frame(
+                egui::Frame::NONE
+                    .fill(self.look.statusbar_bg)
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
+            )
+            .show(ctx, |ui| {
+                self.status_bar(ui, sample.as_deref(), status.as_deref())
+            });
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let mut panels = Panels {
                     captions: Vec::new(),
-                    sample: self.monitor.latest.latest(),
+                    sample,
+                    status,
                     gpu: &mut self.gpu,
+                    net: &mut self.net,
                     sorts: &mut self.sorts,
                     look: &self.look,
                 };
                 show_dock(ui, &mut self.dock, &mut panels);
             });
+        // Keep the statusbar clock ticking on the second, between samples.
+        let millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_millis());
+        ctx.request_repaint_after(Duration::from_millis(u64::from(1000 - millis.min(999))));
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, LAYOUT, &self.dock);
@@ -1039,6 +1255,193 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
     }
 }
 
+fn link_speed(bps: u64) -> String {
+    match bps {
+        1_000_000_000.. => format!("{} Gbps", bps / 1_000_000_000),
+        1_000_000.. => format!("{} Mbps", bps / 1_000_000),
+        1_000.. => format!("{} Kbps", bps / 1_000),
+        _ => format!("{bps} bps"),
+    }
+}
+
+/// A clickable `name*` toggle, starred while on.
+fn toggle(ui: &mut Ui, look: &Look, name: &str, on: bool) -> bool {
+    let label = format!("{name}{}", if on { "*" } else { "" });
+    let color = if on { look.fg } else { look.label };
+    ui.add(
+        egui::Label::new(text(label, color))
+            .selectable(false)
+            .sense(Sense::click()),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    .clicked()
+}
+
+/// Download grows up from the centre line and upload grows down, as in the
+/// terminal. Below: the ping history and the sync/auto toggles with totals.
+fn net_panel(
+    ui: &mut Ui,
+    look: &Look,
+    nets: &[NetInfo],
+    status: Option<&StatusbarInfo>,
+    view: &mut NetView,
+) {
+    if nets.is_empty() {
+        ui.label(text("No network adapters", look.label));
+        return;
+    }
+    let mut index = nets
+        .iter()
+        .position(|n| n.stable_id == view.selected)
+        .unwrap_or(0);
+    let count = nets.len();
+    let name = match nets[index].link_speed {
+        0 => nets[index].description.clone(),
+        bps => format!("{} ({})", nets[index].description, link_speed(bps)),
+    };
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if count > 1 && ui.small_button("▶").clicked() {
+                index = (index + 1) % count;
+            }
+            ui.label(text(name, look.fg));
+            if count > 1 && ui.small_button("◀").clicked() {
+                index = (index + count - 1) % count;
+            }
+        });
+    });
+    view.selected.clone_from(&nets[index].stable_id);
+    let net = &nets[index];
+
+    let full = ui.available_rect_before_wrap();
+    let footer = ROW * 2.0 + 4.0;
+    let graph = Rect::from_min_max(
+        full.min,
+        pos2(full.right(), (full.bottom() - footer).max(full.top())),
+    );
+    ui.allocate_rect(graph, Sense::hover());
+    if graph.height() >= 4.0 * DOT {
+        let (down, up) = (&net.bandwidth.download, &net.bandwidth.upload);
+        let scale = |series: &VecDeque<i64>, configured: i64| {
+            if view.auto {
+                visible_max(series, graph.width(), 0)
+            } else {
+                configured.saturating_mul(1024).max(1)
+            }
+        };
+        let (mut down_max, mut up_max) =
+            (scale(down, look.net_download), scale(up, look.net_upload));
+        if view.sync {
+            down_max = down_max.max(up_max);
+            up_max = down_max;
+        }
+        let painter = ui.painter_at(graph);
+        let mid = graph.center().y;
+        let upper = Rect::from_min_max(graph.min, pos2(graph.right(), mid - 1.0));
+        let lower = Rect::from_min_max(pos2(graph.left(), mid + 1.0), graph.max);
+        dot_graph_scaled(&painter, upper, down, Grow::Up, &look.download, down_max);
+        dot_graph_scaled(&painter, lower, up, Grow::Down, &look.upload, up_max);
+        let stat_pct = |speed: u64, top: u64| pct_of(speed, top).unwrap_or(0);
+        let (d, u) = (&net.stat.download, &net.stat.upload);
+        caption(
+            &painter,
+            look,
+            graph.right_top() + vec2(-2.0, 2.0),
+            Align2::RIGHT_TOP,
+            format!("{} ▼", look.rate(d.speed)),
+            look.download.at(stat_pct(d.speed, d.top)),
+        );
+        caption(
+            &painter,
+            look,
+            graph.right_bottom() + vec2(-2.0, -2.0),
+            Align2::RIGHT_BOTTOM,
+            format!("{} ▲", look.rate(u.speed)),
+            look.upload.at(stat_pct(u.speed, u.top)),
+        );
+    }
+
+    ui.add_space(4.0);
+    if let Some(status) = status {
+        ping_row(ui, look, status);
+    }
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if toggle(ui, look, "sync", view.sync) {
+            view.sync = !view.sync;
+        }
+        if toggle(ui, look, "auto", view.auto) {
+            view.auto = !view.auto;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let totals = format!(
+                "↓ {} ↑ {}",
+                look.bytes(net.stat.download.total),
+                look.bytes(net.stat.upload.total)
+            );
+            ui.label(text(totals, look.fg));
+        });
+    });
+}
+
+/// `Ping ⣀⣀⣠⣀ 4ms`: latency history scaled to its visible maximum (at least
+/// 10 ms). Failed probes are marked with a cross rather than drawn as zero.
+fn ping_row(ui: &mut Ui, look: &Look, status: &StatusbarInfo) {
+    let line = row(ui);
+    let cw = char_width(ui);
+    let cy = line.center().y;
+    let painter = ui.painter();
+    painter.text(
+        line.left_center(),
+        Align2::LEFT_CENTER,
+        "Ping",
+        mono(),
+        look.fg,
+    );
+    let value = status.ping.strip_prefix("ping ").unwrap_or("...");
+    painter.text(
+        line.right_center(),
+        Align2::RIGHT_CENTER,
+        value,
+        mono(),
+        look.fg,
+    );
+    let graph = Rect::from_min_max(
+        pos2(line.left() + 5.0 * cw, line.top() + 2.0),
+        pos2(line.right() - 9.0 * cw, line.bottom() - 2.0),
+    );
+    let cols = graph_columns(graph.width());
+    if cols == 0 {
+        return;
+    }
+    let history = &status.ping_history;
+    let skip = history.len().saturating_sub(cols);
+    let max = history
+        .iter()
+        .skip(skip)
+        .flatten()
+        .copied()
+        .max()
+        .unwrap_or(10)
+        .max(10);
+    let values: VecDeque<i64> = history.iter().map(|v| v.unwrap_or(0)).collect();
+    dot_graph_scaled(
+        &ui.painter_at(graph),
+        graph,
+        &values,
+        Grow::Up,
+        &look.download,
+        max,
+    );
+    let pad = cols - (history.len() - skip);
+    for (i, sample) in history.iter().skip(skip).enumerate() {
+        if sample.is_none() {
+            let x = graph.right() - (cols - pad - i) as f32 * DOT + DOT / 2.0;
+            painter.text(pos2(x, cy), Align2::CENTER_CENTER, "×", mono(), look.hi);
+        }
+    }
+}
+
 /// One right-aligned value column of a process table.
 struct Column {
     header: &'static str,
@@ -1278,7 +1681,9 @@ fn ranking_panel(ui: &mut Ui, look: &Look, sample: &Sample, ranking: Ranking, so
 struct Panels<'a> {
     captions: Vec<(Panel, egui::Rect)>,
     sample: Option<Arc<Sample>>,
+    status: Option<Arc<StatusbarInfo>>,
     gpu: &'a mut usize,
+    net: &'a mut NetView,
     sorts: &'a mut Sorts,
     look: &'a Look,
 }
@@ -1293,6 +1698,7 @@ impl TabViewer for Panels<'_> {
                 Panel::Io => "┤ I/O processes ├",
                 Panel::Mem => "┤ Memory ├",
                 Panel::Disk => "┤ Disks ├",
+                Panel::Net => "┤ Network ├",
                 Panel::CpuProcs => "┤ CPU processes ├",
                 Panel::MemProcs => "┤ Memory processes ├",
                 Panel::GpuProcs => "┤ GPU processes ├",
@@ -1323,6 +1729,13 @@ impl TabViewer for Panels<'_> {
             Panel::Gpu => gpu_panel(ui, self.look, &sample.gpus, self.gpu),
             Panel::Mem => mem_panel(ui, self.look, &sample.mem),
             Panel::Disk => disk_panel(ui, self.look, &sample.disks),
+            Panel::Net => net_panel(
+                ui,
+                self.look,
+                &sample.nets,
+                self.status.as_deref(),
+                self.net,
+            ),
             Panel::Io => ranking_panel(ui, self.look, &sample, Ranking::Io, self.sorts),
             Panel::CpuProcs => ranking_panel(ui, self.look, &sample, Ranking::Cpu, self.sorts),
             Panel::MemProcs => ranking_panel(ui, self.look, &sample, Ranking::Mem, self.sorts),
@@ -1345,6 +1758,14 @@ fn load_config() -> Config {
 pub fn run_desktop() -> eframe::Result {
     let config = load_config();
     let look = Look::new(&config);
+    let interval_ms = u64::try_from(config.refresh.update_ms)
+        .unwrap_or(1000)
+        .clamp(100, 86_400_000);
+    let net = NetView {
+        selected: config.view.net_iface.clone(),
+        auto: config.view.net_auto,
+        sync: config.view.net_sync,
+    };
     let sorts = Sorts {
         mem_ram: config.proc.memory_sort_ram,
         io: config.proc.io_sort,
@@ -1375,8 +1796,9 @@ pub fn run_desktop() -> eframe::Result {
                 .unwrap_or_else(initial_layout);
             Ok(Box::new(Desktop {
                 dock,
-                monitor: Monitor::new(cc.egui_ctx.clone()),
+                monitor: Monitor::new(cc.egui_ctx.clone(), interval_ms),
                 gpu: 0,
+                net,
                 sorts,
                 look,
             }))
@@ -1400,6 +1822,22 @@ mod tests {
         assert_eq!(grad.at(-5), Color32::from_rgb(0, 0, 0));
         assert_eq!(grad.at(50), Color32::from_rgb(100, 100, 100));
         assert_eq!(grad.at(250), Color32::from_rgb(200, 0, 0));
+    }
+
+    #[test]
+    fn refresh_steps_match_terminal_keys() {
+        assert_eq!(step_interval(1000, true), 1100);
+        assert_eq!(step_interval(2000, true), 2100);
+        assert_eq!(step_interval(2100, true), 3100);
+        assert_eq!(step_interval(3000, false), 2000);
+        assert_eq!(step_interval(100, false), 100);
+    }
+
+    #[test]
+    fn link_speeds_use_whole_units() {
+        assert_eq!(link_speed(325_000_000), "325 Mbps");
+        assert_eq!(link_speed(2_500_000_000), "2 Gbps");
+        assert_eq!(link_speed(999), "999 bps");
     }
 
     #[test]
@@ -1472,7 +1910,13 @@ mod tests {
                         &mut Panels {
                             captions: Vec::new(),
                             sample: None,
+                            status: None,
                             gpu: &mut 0,
+                            net: &mut NetView {
+                                selected: String::new(),
+                                auto: true,
+                                sync: false,
+                            },
                             sorts: &mut Sorts {
                                 mem_ram: false,
                                 io: IoSort::Total,
