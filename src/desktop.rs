@@ -77,18 +77,95 @@ impl Panel {
         Panel::GpuProcs,
         Panel::VramProcs,
     ];
+
+    fn index(self) -> usize {
+        Panel::ALL.iter().position(|p| *p == self).unwrap_or(0)
+    }
+}
+
+/// Vertical split fractions of the default layout: the CPU row against the
+/// rest, then GPU, Memory and Network within what is left of the left column.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Fractions {
+    cpu: f32,
+    gpu: f32,
+    mem: f32,
+    net: f32,
+}
+
+impl Fractions {
+    /// Before any panel has been measured.
+    const GUESS: Fractions = Fractions {
+        cpu: 0.33,
+        gpu: 0.25,
+        mem: 0.38,
+        net: 0.68,
+    };
+}
+
+/// One panel's measured needs: the height of its fixed content (everything
+/// but a graph that stretches to fill), and the tab bar and margins around it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Fit {
+    content: f32,
+    /// Height of the panel body the content was drawn in.
+    body: f32,
+    chrome: f32,
+}
+
+/// Separator and rounding slack per panel, so content isn't clipped by a pixel.
+const FIT_SLACK: f32 = 3.0;
+/// Fitting passes after a reset: measure, fit, and settle once more.
+const FIT_FRAMES: u8 = 3;
+
+/// Fractions that give the CPU row and the GPU / Memory / Network / Disks
+/// column exactly their fixed content; the column's leftover height goes to
+/// the stretching graphs (Network twice as much as GPU and Memory). If the
+/// window is too short, the graphs shrink first. `None` until every panel
+/// involved has been measured.
+fn fit_fractions(height: f32, fits: &[Fit; 10]) -> Option<Fractions> {
+    let need = |panel: Panel| {
+        let fit = fits[panel.index()];
+        (fit.content > 0.0).then_some(fit.content + fit.chrome + FIT_SLACK)
+    };
+    let cpu = need(Panel::Cpu)?.min(height * 0.6);
+    let column = height - cpu;
+    let fixed = [need(Panel::Gpu)?, need(Panel::Mem)?, need(Panel::Net)?];
+    let disk = need(Panel::Disk)?;
+    let spare = column - fixed.iter().sum::<f32>() - disk;
+    let [gpu, mem, net] = if spare >= 0.0 {
+        let weights = [1.0, 1.0, 2.0];
+        std::array::from_fn(|i| fixed[i] + spare * weights[i] / 4.0)
+    } else {
+        // Too short for everything: scale the stretchable panels down,
+        // keeping Disks whole as long as possible.
+        let room = (column - disk).max(0.0);
+        let scale = room / fixed.iter().sum::<f32>();
+        fixed.map(|h| h * scale)
+    };
+    let frac = |part: f32, whole: f32| (part / whole.max(1.0)).clamp(0.05, 0.95);
+    Some(Fractions {
+        cpu: frac(cpu, height),
+        gpu: frac(gpu, column),
+        mem: frac(mem, column - gpu),
+        net: frac(net, column - gpu - mem),
+    })
 }
 
 /// Mirrors the terminal's default arrangement: CPU across the top, device
 /// panels on the left and the five process rankings stacked on the right.
 fn initial_layout() -> DockState<Panel> {
+    layout(Fractions::GUESS)
+}
+
+fn layout(f: Fractions) -> DockState<Panel> {
     let mut dock = DockState::new(vec![Panel::Cpu]);
     let tree = dock.main_surface_mut();
-    let [_, gpu] = tree.split_below(NodeIndex::root(), 0.33, vec![Panel::Gpu]);
+    let [_, gpu] = tree.split_below(NodeIndex::root(), f.cpu, vec![Panel::Gpu]);
     let [gpu, procs] = tree.split_right(gpu, 0.5, vec![Panel::CpuProcs]);
-    let [_, mem] = tree.split_below(gpu, 0.25, vec![Panel::Mem]);
-    let [_, net] = tree.split_below(mem, 0.38, vec![Panel::Net]);
-    tree.split_below(net, 0.68, vec![Panel::Disk]);
+    let [_, mem] = tree.split_below(gpu, f.gpu, vec![Panel::Mem]);
+    let [_, net] = tree.split_below(mem, f.mem, vec![Panel::Net]);
+    tree.split_below(net, f.net, vec![Panel::Disk]);
     let [_, rest] = tree.split_below(procs, 0.2, vec![Panel::MemProcs]);
     let [_, rest] = tree.split_below(rest, 0.25, vec![Panel::Io]);
     let [_, rest] = tree.split_below(rest, 1.0 / 3.0, vec![Panel::GpuProcs]);
@@ -474,9 +551,32 @@ struct Desktop {
     net: NetView,
     sorts: Sorts,
     look: Look,
+    /// Measured panel needs, for fitting the default layout.
+    fits: [Fit; 10],
+    /// Frames left in which to refit the default layout to measured panels.
+    fitting: u8,
 }
 
 impl Desktop {
+    /// Rebuild the default layout around the panels' measured needs. Runs for a
+    /// few frames after a reset, since a panel's needs can change with the
+    /// width it was given (the CPU core grid) and the first frames may come
+    /// before any sample.
+    fn refit(&mut self, height: f32) {
+        for panel in Panel::ALL {
+            let fit = &mut self.fits[panel.index()];
+            if let Some((surface, node, _)) = self.dock.find_tab(&panel)
+                && let Some(rect) = self.dock[surface][node].rect()
+            {
+                fit.chrome = (rect.height() - fit.body).max(0.0);
+            }
+        }
+        if let Some(fractions) = fit_fractions(height, &self.fits) {
+            self.dock = layout(fractions);
+            self.fitting -= 1;
+        }
+    }
+
     /// `[reset] [- 1000ms +]  drag hint … [not admin] [rztop CPU] [up] [clock]`.
     fn status_bar(&mut self, ui: &mut Ui, sample: Option<&Sample>, status: Option<&StatusbarInfo>) {
         let look = &self.look;
@@ -559,6 +659,7 @@ impl Desktop {
         });
         if reset {
             self.dock = initial_layout();
+            self.fitting = FIT_FRAMES;
         }
         // Closing saves the layout, so the elevated instance reopens it. If the
         // UAC prompt is declined this instance simply keeps running.
@@ -598,8 +699,13 @@ impl eframe::App for Desktop {
                     net: &mut self.net,
                     sorts: &mut self.sorts,
                     look: &self.look,
+                    fits: &mut self.fits,
                 };
                 show_dock(ui, &mut self.dock, &mut panels);
+                if self.fitting > 0 {
+                    self.refit(ui.max_rect().height());
+                    ui.ctx().request_repaint();
+                }
             });
         // Keep the statusbar clock ticking on the second, between samples.
         let millis = std::time::SystemTime::now()
@@ -918,7 +1024,8 @@ fn last(series: &VecDeque<i64>) -> i64 {
     series.back().copied().unwrap_or(0)
 }
 
-fn cpu_panel(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
+/// Returns the height the stats column needs; the graph beside it stretches.
+fn cpu_panel(ui: &mut Ui, look: &Look, cpu: &CpuInfo) -> f32 {
     let full = ui.available_rect_before_wrap();
     if full.width() >= 620.0 {
         let split = (full.width() * 0.42).round();
@@ -932,12 +1039,14 @@ fn cpu_panel(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
         let mut stats = ui.new_child(egui::UiBuilder::new().max_rect(stats_rect));
         cpu_stats(&mut stats, look, cpu);
         ui.allocate_rect(full, Sense::hover());
+        stats.min_rect().bottom() - full.top()
     } else {
         let height = (full.height() * 0.35).clamp(56.0, 180.0);
         let (graph, _) = ui.allocate_exact_size(vec2(full.width(), height), Sense::hover());
         cpu_graph(ui, look, cpu, graph);
         ui.add_space(6.0);
         cpu_stats(ui, look, cpu);
+        ui.min_rect().bottom() - full.top()
     }
 }
 
@@ -1127,10 +1236,12 @@ fn mhz(value: u32) -> String {
     }
 }
 
-fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
+/// Returns the height of the meters; the utilisation graph below stretches.
+fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) -> f32 {
+    let top = ui.cursor().top();
     if gpus.is_empty() {
         ui.label(text("No GPU readings available", look.label));
-        return;
+        return ui.min_rect().bottom() - top;
     }
     *selected %= gpus.len();
     let gpu = &gpus[*selected];
@@ -1209,6 +1320,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
     // Utilisation history fills whatever height remains.
     ui.add_space(6.0);
     let rest = ui.available_rect_before_wrap();
+    let fixed = rest.top() - top;
     if rest.height() >= ROW + 3.0 * DOT && rest.width() > 4.0 * DOT {
         let (rect, _) = ui.allocate_exact_size(rest.size(), Sense::hover());
         let painter = ui.painter_at(rect);
@@ -1229,6 +1341,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
             look.gpu.at(now),
         );
     }
+    fixed
 }
 
 fn pct_of(value: u64, capacity: u64) -> Option<i64> {
@@ -1239,7 +1352,9 @@ fn pct_of(value: u64, capacity: u64) -> Option<i64> {
 }
 
 /// Used / Avail / Cache / Commit / Swap meters, then the used-memory history.
-fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) {
+/// Returns the height of the meters; the history graph below stretches.
+fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
+    let top = ui.cursor().top();
     let s = &mem.stats;
     let total = s.used + s.available;
     let title = row(ui);
@@ -1300,6 +1415,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) {
 
     ui.add_space(6.0);
     let rest = ui.available_rect_before_wrap();
+    let fixed = rest.top() - top;
     if rest.height() >= ROW + 3.0 * DOT && rest.width() > 4.0 * DOT {
         let (rect, _) = ui.allocate_exact_size(rest.size(), Sense::hover());
         let painter = ui.painter_at(rect);
@@ -1314,6 +1430,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) {
             look.used.at(now),
         );
     }
+    fixed
 }
 
 /// Per drive: a usage meter, then read/write throughput graphs and busy time.
@@ -1425,10 +1542,11 @@ fn net_panel(
     nets: &[NetInfo],
     status: Option<&StatusbarInfo>,
     view: &mut NetView,
-) {
+) -> f32 {
+    let top = ui.cursor().top();
     if nets.is_empty() {
         ui.label(text("No network adapters", look.label));
-        return;
+        return ui.min_rect().bottom() - top;
     }
     let mut index = nets
         .iter()
@@ -1522,6 +1640,8 @@ fn net_panel(
             ui.label(text(totals, look.fg));
         });
     });
+    // Everything but the stretching graph.
+    ui.min_rect().bottom() - top - graph.height()
 }
 
 /// `Ping ⣀⣀⣠⣀ 4ms`: latency history scaled to its visible maximum (at least
@@ -1726,7 +1846,14 @@ fn ranked<'a>(procs: &'a [ProcInfo], ranking: Ranking, sorts: &Sorts) -> Vec<&'a
 
 /// The five process rankings. Primary columns use the CPU gradient; the
 /// other columns are dimmed, as in the terminal.
-fn ranking_panel(ui: &mut Ui, look: &Look, sample: &Sample, ranking: Ranking, sorts: &mut Sorts) {
+/// Returns 0: rankings show as many rows as fit, so they take part in no fitting.
+fn ranking_panel(
+    ui: &mut Ui,
+    look: &Look,
+    sample: &Sample,
+    ranking: Ranking,
+    sorts: &mut Sorts,
+) -> f32 {
     let list = ranked(&sample.procs, ranking, sorts);
     let total_mem = sample.mem.stats.used + sample.mem.stats.available;
     let total_vram = sample.gpus.iter().map(|g| g.mem_total).max().unwrap_or(0);
@@ -1816,6 +1943,7 @@ fn ranking_panel(ui: &mut Ui, look: &Look, sample: &Sample, ranking: Ranking, so
         (Ranking::Io, Some(i)) => sorts.io = [IoSort::Read, IoSort::Write, IoSort::Total][i],
         _ => {}
     }
+    0.0
 }
 
 struct Panels<'a> {
@@ -1826,6 +1954,7 @@ struct Panels<'a> {
     net: &'a mut NetView,
     sorts: &'a mut Sorts,
     look: &'a Look,
+    fits: &'a mut [Fit; 10],
 }
 
 impl TabViewer for Panels<'_> {
@@ -1864,11 +1993,15 @@ impl TabViewer for Panels<'_> {
             ui.label(text("Sampling…", self.look.label));
             return;
         };
-        match panel {
+        let body = ui.max_rect();
+        let content = match panel {
             Panel::Cpu => cpu_panel(ui, self.look, &sample.cpu),
             Panel::Gpu => gpu_panel(ui, self.look, &sample.gpus, self.gpu),
             Panel::Mem => mem_panel(ui, self.look, &sample.mem),
-            Panel::Disk => disk_panel(ui, self.look, &sample.disks),
+            Panel::Disk => {
+                disk_panel(ui, self.look, &sample.disks);
+                ui.cursor().top() - body.top()
+            }
             Panel::Net => net_panel(
                 ui,
                 self.look,
@@ -1881,6 +2014,13 @@ impl TabViewer for Panels<'_> {
             Panel::MemProcs => ranking_panel(ui, self.look, &sample, Ranking::Mem, self.sorts),
             Panel::GpuProcs => ranking_panel(ui, self.look, &sample, Ranking::Gpu, self.sorts),
             Panel::VramProcs => ranking_panel(ui, self.look, &sample, Ranking::Vram, self.sorts),
+        };
+        if content > 0.0 {
+            self.fits[panel.index()] = Fit {
+                content,
+                body: body.height(),
+                chrome: self.fits[panel.index()].chrome,
+            };
         }
     }
 }
@@ -1930,16 +2070,20 @@ pub fn run_desktop() -> eframe::Result {
                 s.visuals.override_text_color = Some(look.fg);
                 s.spacing.item_spacing = egui::vec2(4.0, 2.0);
             });
-            let dock = cc
+            let saved = cc
                 .storage
-                .and_then(|storage| eframe::get_value(storage, LAYOUT))
-                .unwrap_or_else(initial_layout);
+                .and_then(|storage| eframe::get_value(storage, LAYOUT));
+            // A first run fits the default layout like Reset layout does.
+            let fitting = if saved.is_some() { 0 } else { FIT_FRAMES };
+            let dock = saved.unwrap_or_else(initial_layout);
             Ok(Box::new(Desktop {
                 dock,
                 monitor: Monitor::new(cc.egui_ctx.clone(), interval_ms),
                 gpu: 0,
                 net,
                 sorts,
+                fits: [Fit::default(); 10],
+                fitting,
                 look,
             }))
         }),
@@ -1995,6 +2139,39 @@ mod tests {
             let end = cells.last().unwrap().1;
             assert!(end <= 70.3 + 371.7 + 1.0 / ppp, "ppp={ppp}: overflows");
         }
+    }
+
+    #[test]
+    fn fitted_layout_gives_fixed_content_its_height_and_graphs_the_rest() {
+        let mut fits = [Fit::default(); 10];
+        let mut set = |panel: Panel, content| {
+            fits[panel.index()] = Fit {
+                content,
+                body: 0.0,
+                chrome: 37.0,
+            };
+        };
+        set(Panel::Cpu, 240.0);
+        set(Panel::Gpu, 126.0);
+        set(Panel::Mem, 126.0);
+        set(Panel::Net, 66.0);
+        set(Panel::Disk, 44.0);
+        let f = fit_fractions(900.0, &fits).unwrap();
+        let cpu = 900.0 * f.cpu;
+        assert!((cpu - 280.0).abs() < 0.5, "{cpu}");
+        let column = 900.0 - cpu;
+        let gpu = column * f.gpu;
+        let mem = (column - gpu) * f.mem;
+        let net = (column - gpu - mem) * f.net;
+        let disk = column - gpu - mem - net;
+        // Disks gets exactly its content; the spare 620 - 522 = 98 is
+        // shared 1:1:2 between the GPU, Memory and Network graphs.
+        assert!((disk - 84.0).abs() < 0.5, "{disk}");
+        assert!((gpu - (166.0 + 24.5)).abs() < 0.5, "{gpu}");
+        assert!((net - (106.0 + 49.0)).abs() < 0.5, "{net}");
+        // Nothing to fit until every left-column panel has been measured.
+        fits[Panel::Disk.index()].content = 0.0;
+        assert_eq!(fit_fractions(900.0, &fits), None);
     }
 
     #[test]
@@ -2098,6 +2275,7 @@ mod tests {
                                 io: IoSort::Total,
                             },
                             look: &look,
+                            fits: &mut [Fit::default(); 10],
                         },
                     );
                 });
