@@ -1095,15 +1095,6 @@ fn cpu_graph(ui: &Ui, look: &Look, cpu: &CpuInfo, rect: Rect) {
 }
 
 fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
-    let title = row(ui);
-    ui.painter().text(
-        title.right_center(),
-        Align2::RIGHT_CENTER,
-        &cpu.cpu_name,
-        mono(),
-        look.fg,
-    );
-
     let total = cpu.cpu_percent.total.back().copied();
     let total_text = total.map_or_else(|| "N/A".to_owned(), |v| format!("{v}%"));
     meter_row(ui, look, "CPU", total, &total_text, &look.cpu_upper);
@@ -1254,26 +1245,14 @@ fn mhz(value: u32) -> String {
 }
 
 /// Returns the height of the meters; the utilisation graph below stretches.
-fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) -> f32 {
+/// The GPU name and its ◀ ▶ selector are in the tab bar (`tab_header`).
+fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: usize) -> f32 {
     let top = ui.cursor().top();
     if gpus.is_empty() {
         ui.label(text("No GPU readings available", look.label));
         return ui.min_rect().bottom() - top;
     }
-    *selected %= gpus.len();
-    let gpu = &gpus[*selected];
-    let count = gpus.len();
-    ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if count > 1 && ui.small_button("▶").clicked() {
-                *selected = (*selected + 1) % count;
-            }
-            ui.label(text(&gpu.name, look.fg));
-            if count > 1 && ui.small_button("◀").clicked() {
-                *selected = (*selected + count - 1) % count;
-            }
-        });
-    });
+    let gpu = &gpus[selected % gpus.len()];
 
     let util = gpu.gpu_percent.utilization.back().copied();
     let util_text = util.map_or_else(|| "N/A".to_owned(), |v| format!("{v}%"));
@@ -1374,14 +1353,6 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
     let top = ui.cursor().top();
     let s = &mem.stats;
     let total = s.used + s.available;
-    let title = row(ui);
-    ui.painter().text(
-        title.right_center(),
-        Align2::RIGHT_CENTER,
-        look.bytes(total),
-        mono(),
-        look.fg,
-    );
     meter_row(
         ui,
         look,
@@ -1551,6 +1522,20 @@ fn toggle(ui: &mut Ui, look: &Look, name: &str, on: bool) -> bool {
     .clicked()
 }
 
+/// The selected adapter, or the first one if the selection is gone.
+fn net_index(nets: &[NetInfo], view: &NetView) -> usize {
+    nets.iter()
+        .position(|n| n.stable_id == view.selected)
+        .unwrap_or(0)
+}
+
+fn adapter_name(net: &NetInfo) -> String {
+    match net.link_speed {
+        0 => net.description.clone(),
+        bps => format!("{} ({})", net.description, link_speed(bps)),
+    }
+}
+
 /// Download grows up from the centre line and upload grows down, as in the
 /// terminal. Below: the ping history and the sync/auto toggles with totals.
 fn net_panel(
@@ -1565,26 +1550,8 @@ fn net_panel(
         ui.label(text("No network adapters", look.label));
         return ui.min_rect().bottom() - top;
     }
-    let mut index = nets
-        .iter()
-        .position(|n| n.stable_id == view.selected)
-        .unwrap_or(0);
-    let count = nets.len();
-    let name = match nets[index].link_speed {
-        0 => nets[index].description.clone(),
-        bps => format!("{} ({})", nets[index].description, link_speed(bps)),
-    };
-    ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if count > 1 && ui.small_button("▶").clicked() {
-                index = (index + 1) % count;
-            }
-            ui.label(text(name, look.fg));
-            if count > 1 && ui.small_button("◀").clicked() {
-                index = (index + count - 1) % count;
-            }
-        });
-    });
+    // The adapter name and its ◀ ▶ selector are in the tab bar (`tab_header`).
+    let index = net_index(nets, view);
     view.selected.clone_from(&nets[index].stable_id);
     let net = &nets[index];
 
@@ -1974,6 +1941,93 @@ struct Panels<'a> {
     fits: &'a mut [Fit; 10],
 }
 
+impl Panels<'_> {
+    /// Right-aligned panel info on the caption row: the CPU and GPU names,
+    /// total memory and the network adapter. GPU and network get ◀ ▶
+    /// selectors when there are several; a click on either arrow cycles. The
+    /// header is skipped when the tab is too narrow to show it beside the
+    /// caption.
+    fn tab_header(
+        &mut self,
+        panel: Panel,
+        response: &egui::Response,
+        painter: &egui::Painter,
+        caption_right: f32,
+    ) {
+        let Some(sample) = self.sample.clone() else {
+            return;
+        };
+        let (name, count) = match panel {
+            Panel::Cpu => (sample.cpu.cpu_name.clone(), 1),
+            Panel::Gpu if !sample.gpus.is_empty() => {
+                let gpus = &sample.gpus;
+                (gpus[*self.gpu % gpus.len()].name.clone(), gpus.len())
+            }
+            Panel::Mem => {
+                let s = &sample.mem.stats;
+                (self.look.bytes(s.used + s.available), 1)
+            }
+            Panel::Net if !sample.nets.is_empty() => {
+                let nets = &sample.nets;
+                (adapter_name(&nets[net_index(nets, self.net)]), nets.len())
+            }
+            _ => return,
+        };
+        let look = self.look;
+        let arrows = count > 1;
+        let width = |s: &str| {
+            painter
+                .layout_no_wrap(s.to_owned(), mono(), look.fg)
+                .size()
+                .x
+        };
+        let gap = 6.0;
+        let arrow_w = if arrows { width("◀") + gap } else { 0.0 };
+        let right = response.rect.right() - 8.0;
+        let total = width(&name) + 2.0 * arrow_w;
+        if right - total < caption_right + 2.0 * gap {
+            return;
+        }
+        let cy = response.rect.center().y;
+        let mut x = right;
+        let mut step = None;
+        // egui_dock turns a press on a tab into its drag state, so the tab's
+        // own `clicked()` never fires; read the click from the pointer.
+        let click = response.ctx.input(|i| {
+            i.pointer
+                .primary_clicked()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        });
+        let mut arrow = |x: f32, glyph: &str, delta: usize| {
+            let rect = painter.text(pos2(x, cy), Align2::RIGHT_CENTER, glyph, mono(), look.label);
+            if click.is_some_and(|p| rect.expand(3.0).contains(p)) {
+                step = Some(delta);
+            }
+        };
+        if arrows {
+            arrow(x, "▶", 1);
+            x -= arrow_w;
+        }
+        painter.text(pos2(x, cy), Align2::RIGHT_CENTER, &name, mono(), look.fg);
+        x -= width(&name) + gap;
+        if arrows {
+            arrow(x, "◀", count - 1);
+        }
+        if let Some(delta) = step {
+            match panel {
+                Panel::Gpu => *self.gpu = (*self.gpu % count + delta) % count,
+                Panel::Net => {
+                    let next = (net_index(&sample.nets, self.net) + delta) % count;
+                    self.net.selected.clone_from(&sample.nets[next].stable_id);
+                }
+                _ => {}
+            }
+            response.ctx.request_repaint();
+        }
+    }
+}
+
 impl TabViewer for Panels<'_> {
     type Tab = Panel;
     /// Blank, but as wide as the caption: egui_dock always centres tab text,
@@ -1989,13 +2043,19 @@ impl TabViewer for Panels<'_> {
             .ctx
             .layer_painter(response.layer_id)
             .with_clip_rect(response.rect);
-        painter.text(
-            response.rect.left_center() + vec2(8.0, 0.0),
+        // egui bundles only a regular monospace face, so the caption is
+        // emboldened by drawing it twice, one physical pixel apart.
+        let at = response.rect.left_center() + vec2(8.0, 0.0);
+        let px = response.ctx.pixels_per_point().recip();
+        painter.text(at, Align2::LEFT_CENTER, tab.caption(), mono(), self.look.fg);
+        let caption = painter.text(
+            at + vec2(px, 0.0),
             Align2::LEFT_CENTER,
             tab.caption(),
-            FontId::monospace(FONT_SIZE),
+            mono(),
             self.look.fg,
         );
+        self.tab_header(*tab, response, &painter, caption.right());
     }
     fn closeable(&mut self, _: &mut Panel) -> bool {
         false
@@ -2012,7 +2072,7 @@ impl TabViewer for Panels<'_> {
         let body = ui.max_rect();
         let content = match panel {
             Panel::Cpu => cpu_panel(ui, self.look, &sample.cpu),
-            Panel::Gpu => gpu_panel(ui, self.look, &sample.gpus, self.gpu),
+            Panel::Gpu => gpu_panel(ui, self.look, &sample.gpus, *self.gpu),
             Panel::Mem => mem_panel(ui, self.look, &sample.mem),
             Panel::Disk => {
                 disk_panel(ui, self.look, &sample.disks);
