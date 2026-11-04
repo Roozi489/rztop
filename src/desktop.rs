@@ -228,12 +228,21 @@ impl Look {
     }
 
     /// `used/total` with full units, sharing the unit when both match:
-    /// `28.0/37.0 GB`, but `154 MB/5.00 GB`.
+    /// `28.0/37GB`, but `154MB/5GB`. The total is a fixed capacity, so its
+    /// trailing zeros are dropped; the live value keeps them so its width
+    /// stays steady.
     fn pair(&self, used: u64, total: u64) -> String {
         let (used, total) = (self.bytes(used), self.bytes(total));
-        match (used.split_once(' '), total.split_once(' ')) {
-            (Some((a, unit)), Some((b, other))) if unit == other => format!("{a}/{b} {unit}"),
-            _ => format!("{used}/{total}"),
+        let split = |s: &str| {
+            let at = s.find(|c: char| c.is_alphabetic()).unwrap_or(s.len());
+            (s[..at].to_owned(), s[at..].to_owned())
+        };
+        let ((a, unit), (b, other)) = (split(&used), split(&total));
+        let b = trim_zeros(&b);
+        if unit == other {
+            format!("{a}/{b}{unit}")
+        } else {
+            format!("{used}/{b}{other}")
         }
     }
 
@@ -374,10 +383,20 @@ impl Drop for Monitor {
     }
 }
 
+/// `5.00` → `5`, `1.50` → `1.5`, `465` → `465`.
+fn trim_zeros(number: &str) -> &str {
+    if number.contains('.') {
+        number.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        number
+    }
+}
+
 /// Relabel IEC binary units (KiB, MiB, …) with the symbols Windows uses for
-/// the same 1024-based values (KB, MB, …). The numbers are unchanged.
+/// the same 1024-based values (KB, MB, …), written tight like the terminal
+/// (`16.0GB`). The numbers are unchanged.
 fn windows_units(value: String) -> String {
-    value.replace("iB", "B")
+    value.replace("iB", "B").replace(' ', "")
 }
 
 /// One `[body]` statusbar item drawn as a single label, so a right-to-left
@@ -974,8 +993,12 @@ fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
             .unwrap_or(0)
             .min(100) as i64
     });
-    let clock_text = if clock.is_some() { &cpu.cpu_hz } else { "N/A" };
-    meter_row(ui, look, "Clock", clock, clock_text, &look.cpu_upper);
+    let clock_text = if clock.is_some() {
+        cpu.cpu_hz.replace(' ', "")
+    } else {
+        "N/A".to_owned()
+    };
+    meter_row(ui, look, "Clock", clock, &clock_text, &look.cpu_upper);
 
     if let Some(t) = cpu
         .temp
@@ -993,7 +1016,7 @@ fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
                 look,
                 "Watts",
                 Some((watts / max * 100.0).clamp(0.0, 100.0) as i64),
-                &format!("{watts:.0}/{max:.0} W"),
+                &format!("{watts:.0}/{max:.0}W"),
                 &look.cpu_upper,
             ),
             None => meter_row(
@@ -1001,7 +1024,7 @@ fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
                 look,
                 "Watts",
                 None,
-                &format!("{watts:.1} W"),
+                &format!("{watts:.1}W"),
                 &look.cpu_upper,
             ),
         }
@@ -1098,9 +1121,9 @@ fn cores(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
 
 fn mhz(value: u32) -> String {
     if value >= 1000 {
-        format!("{:.2} GHz", f64::from(value) / 1000.0)
+        format!("{:.2}GHz", f64::from(value) / 1000.0)
     } else {
-        format!("{value} MHz")
+        format!("{value}MHz")
     }
 }
 
@@ -1162,7 +1185,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
                 look,
                 "Watts",
                 Some((gpu.pwr_usage.saturating_mul(100) / max_mw).clamp(0, 100)),
-                &format!("{watts:.0}/{:.0} W", max_mw as f64 / 1000.0),
+                &format!("{watts:.0}/{:.0}W", max_mw as f64 / 1000.0),
                 &look.gpu_power,
             );
         } else {
@@ -1171,7 +1194,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
                 look,
                 "Watts",
                 None,
-                &format!("{watts:.0} W"),
+                &format!("{watts:.0}W"),
                 &look.gpu_power,
             );
         }
@@ -1374,10 +1397,10 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
 
 fn link_speed(bps: u64) -> String {
     match bps {
-        1_000_000_000.. => format!("{} Gbit/s", bps / 1_000_000_000),
-        1_000_000.. => format!("{} Mbit/s", bps / 1_000_000),
-        1_000.. => format!("{} kbit/s", bps / 1_000),
-        _ => format!("{bps} bit/s"),
+        1_000_000_000.. => format!("{}Gbit/s", bps / 1_000_000_000),
+        1_000_000.. => format!("{}Mbit/s", bps / 1_000_000),
+        1_000.. => format!("{}kbit/s", bps / 1_000),
+        _ => format!("{bps}bit/s"),
     }
 }
 
@@ -1978,17 +2001,19 @@ mod tests {
     fn sizes_and_rates_use_full_units() {
         const GIB: u64 = 1024 * 1024 * 1024;
         let look = Look::new(&Config::new());
-        assert_eq!(look.bytes(16 * GIB), "16.0 GB");
-        assert_eq!(look.rate(1536), "1.50 KB/s");
-        assert_eq!(look.pair(28 * GIB, 37 * GIB), "28.0/37.0 GB");
-        assert_eq!(look.pair(154 * 1024 * 1024, 5 * GIB), "154 MB/5.00 GB");
+        assert_eq!(look.bytes(16 * GIB), "16.0GB");
+        assert_eq!(look.rate(1536), "1.50KB/s");
+        assert_eq!(look.pair(28 * GIB, 37 * GIB), "28.0/37GB");
+        assert_eq!(look.pair(154 * 1024 * 1024, 5 * GIB), "154MB/5GB");
+        assert_eq!(look.pair(GIB / 2, 3 * GIB / 2), "512MB/1.5GB");
+        assert_eq!(trim_zeros("465"), "465");
     }
 
     #[test]
     fn link_speeds_use_whole_units() {
-        assert_eq!(link_speed(325_000_000), "325 Mbit/s");
-        assert_eq!(link_speed(2_500_000_000), "2 Gbit/s");
-        assert_eq!(link_speed(999), "999 bit/s");
+        assert_eq!(link_speed(325_000_000), "325Mbit/s");
+        assert_eq!(link_speed(2_500_000_000), "2Gbit/s");
+        assert_eq!(link_speed(999), "999bit/s");
     }
 
     #[test]
