@@ -570,6 +570,8 @@ struct Desktop {
     fits: [Fit; 10],
     /// Frames left in which to refit the default layout to measured panels.
     fitting: u8,
+    /// The tab being dragged, which egui_dock draws on a floating layer.
+    dragged: Option<Panel>,
 }
 
 impl Desktop {
@@ -693,6 +695,9 @@ impl Desktop {
 impl eframe::App for Desktop {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let sample = self.monitor.latest.latest();
+        if !ctx.input(|i| i.pointer.primary_down()) {
+            self.dragged = None;
+        }
         let status = self.monitor.status.latest();
         egui::TopBottomPanel::bottom("status")
             .frame(
@@ -715,6 +720,7 @@ impl eframe::App for Desktop {
                     sorts: &mut self.sorts,
                     look: &self.look,
                     fits: &mut self.fits,
+                    dragged: &mut self.dragged,
                 };
                 show_dock(ui, &mut self.dock, &mut panels);
                 if self.fitting > 0 {
@@ -736,6 +742,9 @@ impl eframe::App for Desktop {
 fn show_dock(ui: &mut Ui, dock: &mut DockState<Panel>, panels: &mut Panels) {
     let mut style = egui_dock::Style::from_egui(ui.style());
     style.tab_bar.height = 22.0;
+    // A splitter keeps this much of each side; egui_dock's 175 px default
+    // stops short panels like Disks from shrinking to their content.
+    style.separator.extra = 40.0;
     // Tabs share the whole bar, so a lone caption leaves no empty strip.
     style.tab_bar.fill_tab_bar = true;
     style.tab.tab_body.inner_margin = egui::Margin::same(8);
@@ -1939,6 +1948,7 @@ struct Panels<'a> {
     sorts: &'a mut Sorts,
     look: &'a Look,
     fits: &'a mut [Fit; 10],
+    dragged: &'a mut Option<Panel>,
 }
 
 impl Panels<'_> {
@@ -2039,13 +2049,32 @@ impl TabViewer for Panels<'_> {
     type Tab = Panel;
     /// Blank, but as wide as the caption: egui_dock always centres tab text,
     /// so `on_tab_button` paints the real caption left-aligned instead.
+    /// While a tab is dragged egui_dock draws it on its own floating layer, so
+    /// it gets its real (centred) caption for the move.
     fn title(&mut self, panel: &mut Panel) -> egui::WidgetText {
-        text(" ".repeat(panel.caption().chars().count()), self.look.fg)
-            .strong()
-            .into()
+        let caption = if *self.dragged == Some(*panel) {
+            panel.caption().to_owned()
+        } else {
+            " ".repeat(panel.caption().chars().count())
+        };
+        text(caption, self.look.fg).strong().into()
     }
     fn on_tab_button(&mut self, tab: &mut Panel, response: &egui::Response) {
         self.captions.push((*tab, response.rect));
+        // egui_dock swaps in a separate response for a dragged tab, so detect
+        // the drag from where the press began instead.
+        let dragging = response.ctx.input(|i| {
+            i.pointer.is_decidedly_dragging()
+                && i.pointer
+                    .press_origin()
+                    .is_some_and(|p| response.rect.contains(p))
+        });
+        if dragging {
+            *self.dragged = Some(*tab);
+        }
+        if *self.dragged == Some(*tab) {
+            return;
+        }
         let painter = response
             .ctx
             .layer_painter(response.layer_id)
@@ -2167,6 +2196,7 @@ pub fn run_desktop() -> eframe::Result {
                 sorts,
                 fits: [Fit::default(); 10],
                 fitting,
+                dragged: None,
                 look,
             }))
         }),
@@ -2359,6 +2389,7 @@ mod tests {
                             },
                             look: &look,
                             fits: &mut [Fit::default(); 10],
+                            dragged: &mut None,
                         },
                     );
                 });
