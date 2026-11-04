@@ -47,7 +47,7 @@ const ROW: f32 = 18.0;
 /// Spacing between graph dots, horizontally and vertically.
 const DOT: f32 = 4.0;
 const FONT_SIZE: f32 = 13.0;
-/// Characters reserved for a meter's value, e.g. `154 MiB/5.00 GiB`.
+/// Characters reserved for a meter's value, e.g. `154 MB/5.00 GB`.
 const METER_VALUE_CHARS: f32 = 16.0;
 /// Absolute full-colour I/O rate, matching the terminal rankings.
 const IO_FULL_SCALE: u64 = 5_000_000;
@@ -215,12 +215,22 @@ impl Look {
         }
     }
 
+    /// Byte size with a full unit. Binary (1024) values use the Windows /
+    /// Task Manager labels KB, MB, GB rather than KiB, MiB, GiB, so the numbers
+    /// match what Windows shows; `base_10_sizes` switches to 1000-based units.
     fn bytes(&self, value: u64) -> String {
-        crate::tools::floating_humanizer(value, false, 0, false, false, self.base_10)
+        windows_units(crate::tools::floating_humanizer(
+            value,
+            false,
+            0,
+            false,
+            false,
+            self.base_10,
+        ))
     }
 
     /// `used/total` with full units, sharing the unit when both match:
-    /// `28.0/37.0 GiB`, but `154 MiB/5.00 GiB`.
+    /// `28.0/37.0 GB`, but `154 MB/5.00 GB`.
     fn pair(&self, used: u64, total: u64) -> String {
         let (used, total) = (self.bytes(used), self.bytes(total));
         match (used.split_once(' '), total.split_once(' ')) {
@@ -230,7 +240,14 @@ impl Look {
     }
 
     fn rate(&self, value: u64) -> String {
-        crate::tools::floating_humanizer(value, false, 0, false, true, self.base_10)
+        windows_units(crate::tools::floating_humanizer(
+            value,
+            false,
+            0,
+            false,
+            true,
+            self.base_10,
+        ))
     }
 
     fn temp(&self, celsius: i64) -> String {
@@ -357,6 +374,12 @@ impl Drop for Monitor {
             let _ = worker.join();
         }
     }
+}
+
+/// Relabel IEC binary units (KiB, MiB, …) with the symbols Windows uses for
+/// the same 1024-based values (KB, MB, …). The numbers are unchanged.
+fn windows_units(value: String) -> String {
+    value.replace("iB", "B")
 }
 
 /// One `[body]` statusbar item drawn as a single label, so a right-to-left
@@ -1937,10 +1960,10 @@ mod tests {
     fn sizes_and_rates_use_full_units() {
         const GIB: u64 = 1024 * 1024 * 1024;
         let look = Look::new(&Config::new());
-        assert_eq!(look.bytes(16 * GIB), "16.0 GiB");
-        assert_eq!(look.rate(1536), "1.50 KiB/s");
-        assert_eq!(look.pair(28 * GIB, 37 * GIB), "28.0/37.0 GiB");
-        assert_eq!(look.pair(154 * 1024 * 1024, 5 * GIB), "154 MiB/5.00 GiB");
+        assert_eq!(look.bytes(16 * GIB), "16.0 GB");
+        assert_eq!(look.rate(1536), "1.50 KB/s");
+        assert_eq!(look.pair(28 * GIB, 37 * GIB), "28.0/37.0 GB");
+        assert_eq!(look.pair(154 * 1024 * 1024, 5 * GIB), "154 MB/5.00 GB");
     }
 
     #[test]
