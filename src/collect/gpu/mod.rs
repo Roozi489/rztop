@@ -2,8 +2,7 @@
 //!
 //! A single [`GpuCollector`] aggregates every detected device
 //! across the three vendor SDKs (NVIDIA, AMD, Intel) and runs in
-//! one collector thread spawned by
-//! [`crate::runner::CollectorManager`]. Each collect cycle queries
+//! one sampling thread of the desktop frontend. Each collect cycle queries
 //! every device sequentially and publishes a single
 //! [`crate::runner::GpuSnapshot`] containing every device's data —
 //! mirroring the [`crate::collect::network::NetCollector`] shape.
@@ -84,8 +83,7 @@ struct DeviceEntry {
 /// Single GPU collector aggregating every detected device.
 ///
 /// Implements [`Collector`] like every other subsystem; spawned
-/// once via [`crate::runner::CollectorManager::start`] using the
-/// shared `spawn_collector` helper. One collect cycle queries every
+/// once by the desktop frontend. One collect cycle queries every
 /// device sequentially in vendor → discovery order; one snapshot
 /// per cycle contains every device's data.
 pub(crate) struct GpuCollector {

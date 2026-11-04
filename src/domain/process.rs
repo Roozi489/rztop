@@ -24,6 +24,10 @@ impl IoSort {
 
 /// Information about a single process.
 #[derive(Debug, Clone)]
+#[expect(
+    dead_code,
+    reason = "the collector fills fields the GUI does not show yet (command line, user, state, ...)"
+)]
 pub struct ProcInfo {
     /// Process ID.
     pub pid: u32,
@@ -94,44 +98,6 @@ impl IoRates {
         self.read.saturating_add(self.write)
     }
 }
-
-/// Display-only metadata for one visible process row.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProcDisplayEntry {
-    /// Index into the collector's raw `procs` vector.
-    pub proc_index: usize,
-    /// Tree view prefix string (e.g. "├─ ", "│  └─ ").
-    pub prefix: String,
-    /// Depth in process tree (0 = root).
-    pub depth: usize,
-    /// Aggregated CPU% override (used when `proc_aggregate` is on in tree mode).
-    pub cpu_override: Option<f64>,
-    /// Aggregated memory override (used when `proc_aggregate` is on in tree mode).
-    pub mem_override: Option<u64>,
-}
-
-impl ProcDisplayEntry {
-    pub fn flat(proc_index: usize) -> Self {
-        Self {
-            proc_index,
-            prefix: String::new(),
-            depth: 0,
-            cpu_override: None,
-            mem_override: None,
-        }
-    }
-
-    pub fn tree(proc_index: usize, prefix: String, depth: usize) -> Self {
-        Self {
-            proc_index,
-            prefix,
-            depth,
-            cpu_override: None,
-            mem_override: None,
-        }
-    }
-}
-
 /// Process state on Windows.
 ///
 /// Unlike Linux (R/S/D/Z/T/t/X/K/W/P), Windows has fewer observable states.

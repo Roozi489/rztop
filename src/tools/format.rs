@@ -141,32 +141,8 @@ pub fn format_clock(format: &str) -> String {
     expand_clock_format(format, st.wHour, st.wMinute, st.wSecond)
 }
 
-/// Visible-cell width that [`format_clock`] would produce for the
-/// given format string — derived purely from the format string,
-/// never reads the wall clock.
-///
-/// Shares [`expand_clock_format`] with [`format_clock`], so the
-/// returned width is guaranteed to equal
-/// `tools::ulen(&format_clock(fmt))` cell-for-cell. The
-/// sentinel values `(0, 0, 0)` are safe because every field
-/// formats as `{:02}` and the real-clock values (hour 0-23,
-/// minute/second 0-59) all fit in two digits.
-///
-/// The layout engine uses this on the keystroke hot path; calling
-/// `format_clock` there would issue a Win32 `GetLocalTime` syscall
-/// per event-loop iteration to compute a width that doesn't depend
-/// on the current time.
-pub fn format_clock_width(format: &str) -> usize {
-    if format.is_empty() {
-        return 0;
-    }
-    crate::tools::ulen(&expand_clock_format(format, 0, 0, 0))
-}
-
 /// Expand a clock format string by substituting the supported
-/// specifiers with the supplied time fields. Shared between
-/// [`format_clock`] (passes the wall clock) and
-/// [`format_clock_width`] (passes zeros) so the two cannot drift.
+/// specifiers with the supplied time fields.
 ///
 /// Multi-character aliases (`%T`, `%R`) expand first because
 /// they introduce single-character specifiers (`%H`/`%M`/`%S`)
@@ -208,6 +184,11 @@ pub fn system_uptime_secs() -> u64 {
     // at any time.
     let ms = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() };
     ms / 1000
+}
+
+/// Status-bar uptime text, e.g. `up 3d 04:12`.
+pub fn uptime_label(uptime_seconds: u64) -> String {
+    format!("up {}", sec_to_dhms(uptime_seconds, false, true))
 }
 
 #[cfg(test)]
@@ -381,60 +362,6 @@ mod tests {
     fn strf_time_uptime_replacement() {
         let result = strf_time("/uptime", 3661);
         assert!(result.contains("01:01"), "got: {result}");
-    }
-
-    #[test]
-    fn format_clock_width_empty_is_zero() {
-        assert_eq!(format_clock_width(""), 0);
-    }
-
-    #[test]
-    fn format_clock_width_t_specifier_is_eight_cells() {
-        // `%T` expands to `%H:%M:%S` → "HH:MM:SS" → 8 cells.
-        assert_eq!(format_clock_width("%T"), 8);
-    }
-
-    #[test]
-    fn format_clock_width_individual_specifiers_each_two_cells() {
-        assert_eq!(format_clock_width("%H"), 2);
-        assert_eq!(format_clock_width("%M"), 2);
-        assert_eq!(format_clock_width("%S"), 2);
-    }
-
-    #[test]
-    fn format_clock_width_combinations_match_format_clock_output_width() {
-        // Pin the synchronisation contract: width helper must match
-        // the visible width `format_clock` would produce.
-        for fmt in [
-            "%H:%M",
-            "%H-%M-%S",
-            "[%T]",
-            "%H%M%S",
-            "%T UTC",
-            "%T",
-            "%R",
-            "%I:%M %p",
-            "%I %p",
-            "%H:%M (%p)",
-        ] {
-            assert_eq!(
-                format_clock_width(fmt),
-                crate::tools::ulen(&format_clock(fmt)),
-                "width drift on format {fmt:?}",
-            );
-        }
-    }
-
-    #[test]
-    fn format_clock_width_aliases_match_their_expansions() {
-        assert_eq!(format_clock_width("%T"), 8); // HH:MM:SS
-        assert_eq!(format_clock_width("%R"), 5); // %H:%M
-    }
-
-    #[test]
-    fn format_clock_width_twelve_hour_specifiers_are_two_cells() {
-        assert_eq!(format_clock_width("%I"), 2);
-        assert_eq!(format_clock_width("%p"), 2);
     }
 
     #[test]

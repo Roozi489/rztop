@@ -86,13 +86,6 @@ impl DiskFilter {
         disks.iter().filter(|d| self.matches(&d.name)).collect()
     }
 
-    /// Count of disks in `disks` that pass this filter. Used by
-    /// layout sizing where the full filtered slice isn't needed —
-    /// just the row-count for the disk widget's height policy.
-    pub fn count_matching(&self, disks: &[DiskInfo]) -> usize {
-        disks.iter().filter(|d| self.matches(&d.name)).count()
-    }
-
     /// Entries from the raw filter string that failed to parse, in
     /// their original textual form. Used by `Config::validate` to
     /// surface warnings.

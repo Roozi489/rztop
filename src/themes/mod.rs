@@ -42,11 +42,6 @@ impl Rgb {
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
         Some(Rgb(r, g, b))
     }
-
-    /// Convert to a foreground ANSI truecolor escape code.
-    pub fn to_fg_escape(self) -> String {
-        format!("\x1b[38;2;{};{};{}m", self.0, self.1, self.2)
-    }
 }
 
 /// Three-stop gradient definition (start → mid → end).
@@ -69,6 +64,10 @@ pub struct ThemePalette {
 
 /// Direct color values for a theme.
 #[derive(Debug, Clone, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "themes declare terminal-era colours the GUI does not use"
+)]
 pub struct PaletteColors {
     pub main_bg: Rgb,
     pub main_fg: Rgb,
@@ -122,6 +121,10 @@ pub struct PaletteColors {
 
 /// Gradient definitions for a theme.
 #[derive(Debug, Clone, Deserialize)]
+#[expect(
+    dead_code,
+    reason = "themes declare terminal-era colours the GUI does not use"
+)]
 pub struct PaletteGradients {
     pub cpu_upper: GradientDef,
     pub cpu_lower: GradientDef,
@@ -164,11 +167,6 @@ mod tests {
         assert_eq!(Rgb::parse_hex(""), None);
         assert_eq!(Rgb::parse_hex("#xyz123"), None);
         assert_eq!(Rgb::parse_hex("ff0000"), None);
-    }
-
-    #[test]
-    fn rgb_to_fg_escape_format() {
-        assert_eq!(Rgb(255, 0, 0).to_fg_escape(), "\x1b[38;2;255;0;0m");
     }
 
     #[test]

@@ -86,21 +86,6 @@ pub fn ljust(s: &str, width: usize, utf: bool) -> String {
     }
 }
 
-/// Right-justify string, padding with spaces on the left to `width` columns.
-/// If string exceeds `width`, it is truncated.
-pub fn rjust(s: &str, width: usize, utf: bool) -> String {
-    let current = if utf { ulen(s) } else { s.len() };
-    if current >= width {
-        if utf {
-            uresize(s, width)
-        } else {
-            s[..width].to_string()
-        }
-    } else {
-        format!("{}{}", " ".repeat(width - current), s)
-    }
-}
-
 #[cfg(test)]
 /// Center string, padding with spaces on both sides to `width` columns.
 /// If string exceeds `width`, it is truncated.
@@ -210,16 +195,6 @@ mod tests {
     #[test]
     fn ljust_exact_width() {
         assert_eq!(ljust("hello", 5, false), "hello");
-    }
-
-    #[test]
-    fn rjust_pads_left() {
-        assert_eq!(rjust("hi", 5, false), "   hi");
-    }
-
-    #[test]
-    fn rjust_truncates_if_over() {
-        assert_eq!(rjust("hello world", 5, false), "hello");
     }
 
     #[test]

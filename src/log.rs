@@ -2,17 +2,16 @@
 //! Logging subsystem.
 //!
 //! `tracing_subscriber::filter::LevelFilter` is the canonical type
-//! used everywhere — Config field, options menu, reload handle. The
+//! used everywhere — Config field and reload handle. The
 //! [`serde_filter`] adapter bridges serde to upstream `Display` /
 //! `FromStr`. Lowercase canonical names (matching upstream
-//! `LevelFilter::Display`) are used in TOML and the options menu;
+//! `LevelFilter::Display`) are used in TOML;
 //! the log file's per-line level prefix is produced independently by
 //! the `tracing_subscriber::fmt` formatter.
 //!
-//! The subscriber is installed with a `reload::Layer` so the level
-//! can be changed at runtime via [`set_level`] without restarting. The
-//! single reload handle lives in a module-private `OnceLock` because
-//! the `tracing` global subscriber is itself process-wide.
+//! The subscriber is installed with a `reload::Layer`; the single
+//! reload handle lives in a module-private `OnceLock` because the
+//! `tracing` global subscriber is itself process-wide.
 //!
 //! # Logging conventions
 //!
@@ -61,29 +60,6 @@ pub fn default_filter() -> LevelFilter {
     LevelFilter::WARN
 }
 
-/// All filter settings, in the order the options menu cycles them.
-///
-/// The only consumer is the sync test that guarantees
-/// `FILTER_NAMES[i] == FILTERS[i].to_string()`. Production code
-/// receives the canonical lowercase names through [`FILTER_NAMES`];
-/// the typed slice is not needed at runtime because the menu cycles
-/// strings, not `LevelFilter` values.
-#[cfg(test)]
-const FILTERS: &[LevelFilter] = &[
-    LevelFilter::OFF,
-    LevelFilter::ERROR,
-    LevelFilter::WARN,
-    LevelFilter::INFO,
-    LevelFilter::DEBUG,
-    LevelFilter::TRACE,
-];
-
-/// Lowercase canonical names for the menu, matching upstream
-/// `LevelFilter::Display`. A unit test asserts
-/// `FILTER_NAMES[i] == FILTERS[i].to_string()` so the two
-/// cannot drift.
-pub const FILTER_NAMES: &[&str] = &["off", "error", "warn", "info", "debug", "trace"];
-
 /// Errors returned by [`init`].
 #[derive(Debug, Error)]
 pub enum InitError {
@@ -93,13 +69,6 @@ pub enum InitError {
     SubscriberSet,
     #[error("failed to prepare log directory: {0}")]
     PrepareLogDir(#[from] std::io::Error),
-}
-
-/// Errors returned by [`set_level`].
-#[derive(Debug, Error)]
-pub enum SetLevelError {
-    #[error(transparent)]
-    Install(#[from] InitError),
 }
 
 /// Serde adapter for `tracing_subscriber::filter::LevelFilter`.
@@ -144,14 +113,9 @@ pub enum Subsystem {
     /// lifecycle) — distinct from the per-vendor variants above
     /// which name the SDK responsible for an individual log event.
     Gpu,
-    Theme,
     Config,
-    Terminal,
     Logger,
     Startup,
-    Ui,
-    Input,
-    Runner,
 }
 
 impl std_fmt::Display for Subsystem {
@@ -168,14 +132,9 @@ impl std_fmt::Display for Subsystem {
             Self::GpuIgcl => "gpu_igcl",
             Self::GpuAdl => "gpu_adl",
             Self::Gpu => "gpu",
-            Self::Theme => "theme",
             Self::Config => "config",
-            Self::Terminal => "terminal",
             Self::Logger => "logger",
             Self::Startup => "startup",
-            Self::Ui => "ui",
-            Self::Input => "input",
-            Self::Runner => "runner",
         };
         f.write_str(s)
     }
@@ -290,10 +249,7 @@ fn install_subscriber(log_dir: &Path, filter: LevelFilter) -> Result<(), InitErr
 /// non-`OFF` level the directory is created, the file is
 /// truncated, and the subscriber is installed immediately. With
 /// `filter == LevelFilter::OFF` no subscriber is installed and
-/// the filesystem is not touched; the subscriber will be installed
-/// on the first [`set_level`] call that raises the level.
-///
-/// The level filter is reloadable via [`set_level`].
+/// the filesystem is not touched.
 pub fn init(log_dir: &Path, filter: LevelFilter) -> Result<(), InitError> {
     LOG_DIR
         .set(log_dir.to_path_buf())
@@ -301,42 +257,6 @@ pub fn init(log_dir: &Path, filter: LevelFilter) -> Result<(), InitError> {
     if filter != LevelFilter::OFF {
         install_subscriber(log_dir, filter)?;
     }
-    Ok(())
-}
-
-/// Apply a new level filter to the live subscriber, installing
-/// the subscriber on first activation if necessary.
-///
-/// Three exhaustive cases:
-///
-/// * Subscriber already installed → flip the filter via the
-///   reload handle.
-/// * No subscriber and `filter == LevelFilter::OFF` → no-op.
-/// * No subscriber and `filter != LevelFilter::OFF` → install
-///   the subscriber for the first time, which prepares the log
-///   directory and truncates `rztop.log`.
-///
-/// Panics if [`init`] was not called first; the in-tree callers
-/// all run after `main` has called `init`.
-pub fn set_level(filter: LevelFilter) -> Result<(), SetLevelError> {
-    if let Some(handle) = RELOAD_HANDLE.get() {
-        handle
-            .modify(|f| *f = filter)
-            .expect("reload handle should accept a LevelFilter");
-        tracing::info!(
-            subsystem = %Subsystem::Logger,
-            level = %filter,
-            "log level changed",
-        );
-        return Ok(());
-    }
-    if filter == LevelFilter::OFF {
-        return Ok(());
-    }
-    let log_dir = LOG_DIR
-        .get()
-        .expect("log::set_level called before log::init");
-    install_subscriber(log_dir, filter)?;
     Ok(())
 }
 
@@ -405,21 +325,6 @@ mod tests {
     }
 
     #[test]
-    fn filter_names_match_filters() {
-        assert_eq!(FILTER_NAMES.len(), FILTERS.len());
-        for (name, filter) in FILTER_NAMES.iter().zip(FILTERS.iter()) {
-            assert_eq!(*name, filter.to_string());
-        }
-    }
-
-    #[test]
-    fn filter_names_round_trip_through_from_str() {
-        for (name, filter) in FILTER_NAMES.iter().zip(FILTERS.iter()) {
-            assert_eq!(LevelFilter::from_str(name).unwrap(), *filter);
-        }
-    }
-
-    #[test]
     fn from_str_is_case_insensitive() {
         assert_eq!(LevelFilter::from_str("WARN").unwrap(), LevelFilter::WARN);
         assert_eq!(LevelFilter::from_str("Warn").unwrap(), LevelFilter::WARN);
@@ -462,19 +367,14 @@ mod tests {
             (Subsystem::GpuIgcl, "gpu_igcl"),
             (Subsystem::GpuAdl, "gpu_adl"),
             (Subsystem::Gpu, "gpu"),
-            (Subsystem::Theme, "theme"),
             (Subsystem::Config, "config"),
-            (Subsystem::Terminal, "terminal"),
             (Subsystem::Logger, "logger"),
             (Subsystem::Startup, "startup"),
-            (Subsystem::Ui, "ui"),
-            (Subsystem::Input, "input"),
-            (Subsystem::Runner, "runner"),
         ];
         for (variant, expected) in cases {
             assert_eq!(variant.to_string(), *expected);
         }
-        assert_eq!(cases.len(), 19);
+        assert_eq!(cases.len(), 14);
     }
 
     #[test]

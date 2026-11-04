@@ -1,31 +1,19 @@
 [package]
 name = "rztop"
-default-run = "rztop"
-description = "A terminal-based system monitor for Windows, forked from rtop"
+description = "A desktop system monitor for Windows, forked from rtop"
 version = "0.24.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 repository = "https://github.com/Roozi489/rtop"
-authors = ["Freddie Haddad"]
+authors = ["Freddie Haddad", "Roozi489"]
 rust-version = "1.95"
 
-[features]
-default = []
-desktop = ["dep:eframe", "dep:egui_dock"]
-
-[[bin]]
-name = "rztop-desktop"
-path = "src/bin/desktop.rs"
-required-features = ["desktop"]
-
 [dependencies]
-eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "persistence"], optional = true }
-egui_dock = { version = "0.16", features = ["serde"], optional = true }
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "persistence"] }
+egui_dock = { version = "0.16", features = ["serde"] }
 arc-swap = "1"
-clap = { version = "4", features = ["derive"] }
-crossterm = "0.29"
 directories = "6"
-regex = "1"
+
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 toml = "1"
@@ -64,3 +52,6 @@ features = [
 opt-level = 3
 lto = "thin"
 strip = true
+
+[dev-dependencies]
+regex = "1"

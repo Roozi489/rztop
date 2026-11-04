@@ -51,7 +51,7 @@ pub(super) fn validate_choice(
     }
 }
 
-/// UI / general appearance settings (`general` options-menu tab).
+/// UI / general appearance settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -85,14 +85,8 @@ impl Default for UiConfig {
 /// Refresh-interval settings (one global + per-subsystem
 /// overrides). Each per-subsystem `*_update_ms` field is
 /// independent of the global `update_ms`; a field set to 0
-/// inherits the global value via [`RefreshConfig::effective`].
-///
-/// `gpu_update_ms` applies to **every** discovered GPU
-/// uniformly. The cycling-GPU widget displays one device at a
-/// time and the per-device collector threads share a single
-/// configured interval; every refresh-related action broadcasts
-/// the resolved value to every GPU thread via
-/// [`crate::runner::CollectorManager::apply_refresh`].
+/// inherits the global value. The desktop frontend currently samples
+/// everything at the global `update_ms`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RefreshConfig {
@@ -119,30 +113,7 @@ impl Default for RefreshConfig {
     }
 }
 
-impl RefreshConfig {
-    /// Return the effective update interval for a per-widget field.
-    ///
-    /// If `widget_ms` is `> 0` the per-widget override is used,
-    /// clamped to `[100, 86_400_000]`. Otherwise the field inherits
-    /// the global `update_ms`, floored at 100 ms (so a 0 or negative
-    /// global also yields 100 ms — the worker loop's
-    /// `recv_timeout(0)` would otherwise busy-spin).
-    ///
-    /// This rule is the **single source of truth** for "which
-    /// interval should subsystem X poll at?" and is invoked from
-    /// exactly one place: [`crate::runner::CollectorManager`] (at
-    /// startup via `start`, at every runtime change via
-    /// `apply_refresh`).
-    pub fn effective(&self, widget_ms: i64) -> u64 {
-        if widget_ms > 0 {
-            widget_ms.clamp(100, 86_400_000) as u64
-        } else {
-            self.update_ms.max(100) as u64
-        }
-    }
-}
-
-/// CPU widget settings (`cpu` options-menu tab).
+/// CPU widget settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CpuConfig {
@@ -181,7 +152,7 @@ impl Default for CpuConfig {
     }
 }
 
-/// Statusbar settings (`statusbar` options-menu tab).
+/// Statusbar settings.
 ///
 /// The borderless 1-row statusbar widget is laid out via the slot
 /// tree like every other widget. `show_statusbar` is the master
@@ -218,7 +189,7 @@ impl Default for StatusbarConfig {
     }
 }
 
-/// Memory widget settings (`mem` options-menu tab).
+/// Memory widget settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MemConfig {
@@ -236,14 +207,10 @@ impl Default for MemConfig {
     }
 }
 
-/// Network widget settings (`net` options-menu tab).
+/// Network widget settings.
 ///
 /// Runtime-mutable network bits (`net_auto`, `net_sync`,
-/// `net_iface`) live on [`ViewConfig`] / `AppState::view`
-/// ([`crate::app::RuntimeView`]) — they're toggled outside the
-/// options menu (`a`, `s`, Tab keys) and the architecture treats
-/// them as session view-state that mirrors back to the persisted
-/// form on save.
+/// `net_iface`) live on [`ViewConfig`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetConfig {
@@ -264,15 +231,11 @@ impl Default for NetConfig {
     }
 }
 
-/// Process widget settings (`proc` options-menu tab).
+/// Process widget settings.
 ///
 /// Runtime-mutable process bits (`proc_tree`, `proc_reversed`,
 /// `proc_per_core`, `proc_sorting`, `proc_filter`) live on
-/// [`ViewConfig`] / `AppState::view` ([`crate::app::RuntimeView`])
-/// — they're toggled outside the options menu (`e`, `r`, `c`,
-/// Left/Right, `f`/`/` keys) and the architecture treats them as
-/// session view-state that mirrors back to the persisted form on
-/// save.
+/// [`ViewConfig`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProcConfig {
@@ -308,13 +271,9 @@ impl Default for ProcConfig {
     }
 }
 
-/// Disk widget settings (`disk` options-menu tab).
+/// Disk widget settings.
 ///
-/// Runtime-mutable disk bits (`io_mode`) live on [`ViewConfig`] /
-/// `AppState::view` ([`crate::app::RuntimeView`]) — `i` toggles it
-/// outside the options menu and the architecture treats it as
-/// session view-state that mirrors back to the persisted form on
-/// save.
+/// Runtime-mutable disk bits (`io_mode`) live on [`ViewConfig`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiskConfig {
@@ -337,28 +296,9 @@ impl Default for DiskConfig {
     }
 }
 
-/// View-state config: fields the user toggles outside the
-/// options menu (process tree mode, sort, filter, IO mode,
-/// network auto-scale / sync / interface, GPU device cursor).
-///
-/// These fields persist across restarts (so toggle gestures
-/// survive the next launch) but their *runtime* mutation goes
-/// through [`crate::app::RuntimeView`] in `AppState`, not
-/// directly through `Config`. Sync points:
-///
-/// 1. `AppState::new` initialises `RuntimeView` from
-///    `Config::view`.
-/// 2. Opening the options menu copies `RuntimeView ->
-///    Config::view` so the menu shows the current values.
-/// 3. Committing an options-menu edit copies
-///    `Config::view -> RuntimeView` so the runtime picks up the
-///    user's change.
-/// 4. Process exit copies `RuntimeView -> Config::view`
-///    before serialising so the on-disk form is current.
-///
-/// Handler runtime toggles (`e`, `r`, `c`, Left/Right, `i`, `a`,
-/// `s`, `b`/`n`, `[`/`]`, `f`/`/`) mutate `RuntimeView` only —
-/// they never reach `&mut Config`.
+/// View-state config: process tree mode, sort, filter, IO mode,
+/// network auto-scale / sync / interface and GPU device cursor.
+/// The desktop frontend reads these as start-up defaults.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ViewConfig {

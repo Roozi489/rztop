@@ -409,7 +409,7 @@ fn spawn_worker<S, T: Send + Sync + 'static>(
 }
 
 /// Background sampling. Ping can block for its whole timeout, so the
-/// statusbar collector runs on its own thread, as in the terminal frontend.
+/// statusbar collector runs on its own thread.
 struct Monitor {
     latest: LatestSlot<Sample>,
     status: LatestSlot<StatusbarInfo>,
@@ -694,10 +694,7 @@ impl Desktop {
                     item(ui, &clock);
                 }
                 if let Some(status) = status {
-                    item(
-                        ui,
-                        &crate::ui::statusbar_widget::uptime_label(status.uptime_seconds),
-                    );
+                    item(ui, &crate::tools::uptime_label(status.uptime_seconds));
                 }
                 let own = sample.and_then(|s| {
                     let me = s.procs.iter().find(|p| p.pid == std::process::id())?;
@@ -2259,12 +2256,26 @@ impl TabViewer for Panels<'_> {
     }
 }
 
+/// Load `rztop.toml` read-only and start the file logger. A GUI build has
+/// no console, so config warnings and panics go to `rztop.log`.
 fn load_config() -> Config {
     let mut config = Config::new();
     let path = crate::tools::config_dir().join("rztop.toml");
-    if path.exists() {
-        // Read-only: warnings are reported by the terminal frontend, which owns the file.
-        let _ = config.load(&path);
+    let warnings = if path.exists() {
+        config.load(&path)
+    } else {
+        Vec::new()
+    };
+    let log_dir = crate::tools::data_dir();
+    if crate::log::init(&log_dir, config.log.log_level).is_ok() {
+        crate::log::startup_banner(
+            config.log.log_level,
+            &log_dir.join("rztop.log"),
+            path.exists().then_some(path.as_path()),
+        );
+    }
+    for warning in &warnings {
+        tracing::warn!(subsystem = %crate::log::Subsystem::Config, %warning, "config load warning");
     }
     config
 }

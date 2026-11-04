@@ -50,7 +50,7 @@ impl CollectStatus {
 /// Common interface for data collectors.
 ///
 /// `collect()` updates internal state. `snapshot()` produces the
-/// per-cycle value written by [`crate::runner::CollectorManager`] to
+/// per-cycle value the desktop frontend publishes to
 /// [`crate::runner::LatestSlot`].
 ///
 /// The trait is `pub(crate)` so `Snapshot` can reference

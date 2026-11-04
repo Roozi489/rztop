@@ -1,8 +1,6 @@
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use std::collections::VecDeque;
 
-use crate::domain::config_enums::CpuGraphSource;
-
 /// Aggregate CPU usage histories by category.
 #[derive(Debug, Clone, Default)]
 pub struct CpuPercent {
@@ -10,21 +8,6 @@ pub struct CpuPercent {
     pub user: VecDeque<i64>,
     pub system: VecDeque<i64>,
     pub idle: VecDeque<i64>,
-}
-
-impl CpuPercent {
-    /// Look up the per-source history for a graph row. `Auto` and
-    /// `Total` both map to the aggregate `total` series; `User` and
-    /// `System` map to their respective fields. `Idle` is intentionally
-    /// not exposed via [`CpuGraphSource`] (the upper/lower-graph
-    /// option-menu choices are User/System/Total/Auto only).
-    pub fn series(&self, source: CpuGraphSource) -> &VecDeque<i64> {
-        match source {
-            CpuGraphSource::User => &self.user,
-            CpuGraphSource::System => &self.system,
-            CpuGraphSource::Auto | CpuGraphSource::Total => &self.total,
-        }
-    }
 }
 
 /// CPU usage data for all cores and aggregate statistics.
@@ -81,22 +64,6 @@ mod tests {
         assert!(info.cpu_percent.user.is_empty());
         assert!(info.cpu_percent.system.is_empty());
         assert!(info.cpu_percent.idle.is_empty());
-    }
-
-    #[test]
-    fn cpu_percent_series_returns_correct_field() {
-        use crate::domain::config_enums::CpuGraphSource;
-        let mut pct = CpuPercent::default();
-        pct.total.push_back(42);
-        pct.user.push_back(10);
-        pct.system.push_back(20);
-        pct.idle.push_back(30);
-
-        assert_eq!(pct.series(CpuGraphSource::Total).back(), Some(&42));
-        assert_eq!(pct.series(CpuGraphSource::User).back(), Some(&10));
-        assert_eq!(pct.series(CpuGraphSource::System).back(), Some(&20));
-        // Auto resolves to total — same series as Total.
-        assert_eq!(pct.series(CpuGraphSource::Auto).back(), Some(&42));
     }
 
     #[test]

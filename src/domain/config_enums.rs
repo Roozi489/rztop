@@ -6,14 +6,10 @@
 //! * `Display`, `Serialize`, `FromStr`, and `Deserialize` all
 //!   delegate to `as_str` / `FromStr` — no string literals
 //!   duplicated.
-//! * `ALL` exposes every variant in cycle order; `NAMES` is the
-//!   matching `&[&str]` for the options menu's `browsable_values`.
-//!   A unit test asserts `NAMES[i] == ALL[i].as_str()` so the
-//!   two cannot drift.
+//! * `ALL` exposes every variant; `FromStr` searches it.
 //!
-//! `ProcSort` lives in `crate::collect::process_display` because
-//! it owns the sort-dispatch logic; reference it directly there
-//! when needed.
+//! `ProcSort` lives in `crate::collect::process_display`; reference
+//! it directly there when needed.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -40,8 +36,6 @@ impl TempScale {
         TempScale::Kelvin,
         TempScale::Rankine,
     ];
-
-    pub const NAMES: &'static [&'static str] = &["celsius", "fahrenheit", "kelvin", "rankine"];
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -105,8 +99,6 @@ impl GraphSymbol {
         GraphSymbol::Block,
     ];
 
-    pub const NAMES: &'static [&'static str] = &["default", "braille", "block"];
-
     pub const fn as_str(self) -> &'static str {
         match self {
             GraphSymbol::Default => "default",
@@ -167,26 +159,12 @@ impl CpuGraphSource {
         CpuGraphSource::System,
     ];
 
-    pub const NAMES: &'static [&'static str] = &["auto", "total", "user", "system"];
-
     pub const fn as_str(self) -> &'static str {
         match self {
             CpuGraphSource::Auto => "auto",
             CpuGraphSource::Total => "total",
             CpuGraphSource::User => "user",
             CpuGraphSource::System => "system",
-        }
-    }
-
-    /// User-facing graph-overlay label. `Auto` resolves to `"total"`
-    /// (the underlying data series does too — see
-    /// [`crate::domain::cpu::CpuPercent::series`]) so the on-screen
-    /// label always names the actual series being plotted.
-    pub const fn display_label(self) -> &'static str {
-        match self {
-            CpuGraphSource::User => "user",
-            CpuGraphSource::System => "system",
-            CpuGraphSource::Auto | CpuGraphSource::Total => "total",
         }
     }
 }
@@ -231,14 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn temp_scale_names_match_all() {
-        assert_eq!(TempScale::NAMES.len(), TempScale::ALL.len());
-        for (name, value) in TempScale::NAMES.iter().zip(TempScale::ALL.iter()) {
-            assert_eq!(*name, value.as_str());
-        }
-    }
-
-    #[test]
     fn temp_scale_round_trips() {
         for value in TempScale::ALL.iter().copied() {
             let s = value.as_str();
@@ -260,14 +230,6 @@ mod tests {
     }
 
     #[test]
-    fn graph_symbol_names_match_all() {
-        assert_eq!(GraphSymbol::NAMES.len(), GraphSymbol::ALL.len());
-        for (name, value) in GraphSymbol::NAMES.iter().zip(GraphSymbol::ALL.iter()) {
-            assert_eq!(*name, value.as_str());
-        }
-    }
-
-    #[test]
     fn graph_symbol_round_trips() {
         for value in GraphSymbol::ALL.iter().copied() {
             let s = value.as_str();
@@ -285,14 +247,6 @@ mod tests {
     #[test]
     fn cpu_graph_source_default_is_auto() {
         assert_eq!(CpuGraphSource::default(), CpuGraphSource::Auto);
-    }
-
-    #[test]
-    fn cpu_graph_source_names_match_all() {
-        assert_eq!(CpuGraphSource::NAMES.len(), CpuGraphSource::ALL.len());
-        for (name, value) in CpuGraphSource::NAMES.iter().zip(CpuGraphSource::ALL.iter()) {
-            assert_eq!(*name, value.as_str());
-        }
     }
 
     #[test]

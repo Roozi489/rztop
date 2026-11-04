@@ -427,8 +427,7 @@ impl NvApiFunctions {
 /// one device thread can be passed back to NvAPI from that same
 /// thread without external synchronisation. The wrapper exists
 /// purely to satisfy the `Send + Sync` requirement on the per-device
-/// collector type that crosses a thread boundary in
-/// [`crate::runner::spawn_collector`].
+/// collector type that crosses into the sampling thread.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub(super) struct SendNvHandle(NvPhysicalGpuHandle);

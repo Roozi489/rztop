@@ -2,431 +2,142 @@
 
 # rztop
 
-rztop is a customized fork of [rtop by Freddie Haddad](https://github.com/freddiehaddad/rtop). Original copyright and GPL-2.0-or-later licensing are retained. Fork changes began 2026-11-02.
+**A desktop system monitor for Windows.**
 
-**A terminal-based system monitor for Windows, inspired by [btop](https://github.com/aristocratos/btop).**
-
-Written in Rust. Fast. Beautiful.
-
-[![Windows](https://img.shields.io/badge/platform-Windows%2011-0078D6?logo=windows)](https://github.com/freddiehaddad/rtop/releases)
+[![Windows](https://img.shields.io/badge/platform-Windows%2011-0078D6?logo=windows)](#installation)
 [![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-GPL--2.0-green)](LICENSE)
-
-![rtop baseline screenshot](docs/screenshot.png)
+[![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
 
 </div>
 
----
+rztop is a fork of [rtop by Freddie Haddad](https://github.com/freddiehaddad/rtop),
+a terminal system monitor inspired by [btop](https://github.com/aristocratos/btop).
+rztop keeps rtop's Windows-native data collection and its look (themes, gradients,
+dot graphs) and replaces the terminal interface with a native window of dockable
+panels. If you want a terminal monitor, use rtop.
 
-## What is rztop?
-
-rztop is a resource monitor that shows CPU, memory, disk, network, GPU, and process information in a single terminal window. It's built from the ground up for **Windows** using native Win32 APIs.
-
-The UI design is based on [btop](https://github.com/aristocratos/btop) by aristocratos, reimagined in Rust with Windows-native data collection and several enhancements:
-
-- **Disk is a separate widget**: independently toggleable, not embedded in the memory panel
-- **Preset system**: cycle through curated layout presets with `p` / `P`
-- **Custom layouts**: beyond the built-in presets, arrange widgets into rows, columns, and nested panels with adjustable proportions ([details](#custom-layout))
-- **GPU monitoring**: NVIDIA (NvAPI), AMD (ADL), and Intel (IGCL)
-- **CPU temperature and power** via PawnIO kernel driver
-- **Per-widget dirty rendering**: only redraws what changed
-- **Per-widget refresh rates**: set individual update intervals for each widget
-- **41 bundled themes**: dracula, nord, gruvbox, tokyo-night, and more
-- **Vim key bindings**: optional h/j/k/l/g/G and Ctrl+F/B/D/U navigation
-- **Process following**: pin a process with `F` to auto-scroll across refreshes
-- **Statusbar**: borderless 1-row bar at the bottom with menu/preset/update interval (left) and uptime/clock (right)
-- **Disk IO mode**: toggle between usage meters and throughput graphs
+The original copyright and the GPL-2.0-or-later license are retained. Fork changes
+began on 2026-11-02; modified files are marked with a `Modified for rztop` header.
 
 ## Features
 
-| Widget | Data |
-|--------|------|
-| **CPU** | Per-core utilization, frequency, temperature¹, power (watts)¹, user/system graphs, Clock meter |
-| **Memory** | Used, available, cached, free, swap — with meter bars |
-| **Disk** | Per-volume usage, filesystem type, capacity, read/write throughput, busy time, IO mode |
-| **Network** | Download/upload graphs with auto-scaling, interface selector, speed totals |
-| **GPU** | Utilization, temperature, VRAM, power draw, clocks (NVIDIA, AMD, Intel) |
-| **Process** | PID, name, command line, CPU%, memory, tree view, filter, sort, follow, terminate |
+| Panel | Shows |
+|-------|-------|
+| **CPU** | Total and per-core usage graphs, clock, temperature¹ and power¹ |
+| **GPU** | Utilization, VRAM, power and clock graphs; temperature. NVIDIA, AMD and Intel |
+| **Memory** | Used, available, cached, commit and swap meters |
+| **Network** | Download/upload graphs with auto-scaling, adapter selector, ping history |
+| **Disks** | Per-volume usage, read/write throughput and busy time |
+| **I/O** | Processes ranked by read/s, write/s or total |
+| **CPU / Memory / GPU / VRAM** | Processes ranked by each resource |
 
-¹ Temperature and power readings require [PawnIO](#cpu-temperature--power) and Administrator privileges.
+¹ Needs [PawnIO](#cpu-temperature-and-power) and administrator rights.
 
-### Keybinds
-
-#### Global
-
-| Key | Action |
-|-----|--------|
-| `q` / `Ctrl+C` | Quit |
-| `m` | Toggle main menu |
-| `Esc` | Close detail panel |
-| `?` / `F1` | Toggle help |
-| `o` / `F2` | Toggle options |
-| `p` / `Shift+P` | Cycle presets forward/back |
-| `Ctrl+R` | Reload config |
-| `+` / `-` | Adjust update speed |
-| `1`–`6` | Toggle widget (cpu/mem/net/proc/disk/gpu) |
-| `Shift+R` | Restore all hidden widgets |
-
-#### Process
-
-| Key | Action |
-|-----|--------|
-| `Up` / `Down` | Select process |
-| `PgUp` / `PgDn` | Page through processes |
-| `Home` / `End` | Jump to first/last |
-| `Left` / `Right` | Cycle sort column |
-| `r` | Toggle reverse sort |
-| `f` / `/` | Filter processes |
-| `e` | Toggle tree view |
-| `c` | Toggle per-core CPU |
-| `t` | Terminate process (graceful, double-tap) |
-| `Shift+T` | Kill process (force, double-tap) |
-| `Space` | Pause / resume process list (freeze the snapshot for inspection) |
-| `Enter` | Show/hide process details |
-| `Shift+F` | Follow/unfollow process |
-
-#### Disk
-
-| Key | Action |
-|-----|--------|
-| `i` | Toggle disk IO mode |
-
-#### Network
-
-| Key | Action |
-|-----|--------|
-| `>` / `<` | Cycle network interfaces |
-| `a` | Toggle network auto scale |
-| `s` | Toggle network sync scale |
-
-#### GPU
-
-| Key | Action |
-|-----|--------|
-| `[` / `]` | Cycle GPU devices |
-
-
-When **vim keys** are enabled (options → general):
-`h`/`j`/`k`/`l` for directional control, `g`/`G` for top/bottom of list, `Ctrl+F`/`Ctrl+B` for page scrolling, `Ctrl+D`/`Ctrl+U` for half-page scrolling.
-
-See the built-in help menu (`?` / `F1`) for the complete list.
-
----
+- **Dockable layout**: drag a panel's caption onto another panel to split it or group the two as tabs; drag separators to resize.
+- **Layout controls** in the status bar: **save** stores the current arrangement and window position, **load** restores it, **reset** returns to the default arrangement sized to fit the window.
+- **Status bar**: refresh interval (click `-` / `+`), rztop's own CPU usage, uptime, clock, and a warning when rztop is not elevated and some data is unavailable.
+- **41 bundled themes** shared with rtop.
+- Sizes are labelled MB and GB like Task Manager (1024-based; `base_10_sizes = true` switches to 1000-based).
 
 ## Installation
 
-### Build from source
+No release is published yet. Build from source:
 
-This fork is under local development; no rztop release is published yet.
+**Requirements**
 
-**Requirements:**
-- [Rust](https://rustup.rs/) (stable toolchain)
-- Windows 10/11 SDK (included with Visual Studio Build Tools)
+- [Rust](https://rustup.rs/), stable toolchain (1.95 or newer)
+- Windows 10/11 SDK (included with the Visual Studio Build Tools)
 
 ```powershell
-# From the local rztop source checkout
 cargo build --release
 ```
 
-The binary is at `target\release\rztop.exe`.
+The app is `target\release\rztop.exe`. Run the tests with `cargo test`.
 
-**Run tests:**
+## CPU temperature and power
 
-```powershell
-cargo test
-```
-
----
-
-## CPU Temperature & Power
-
-CPU temperature and power readings require [PawnIO](https://pawnio.eu), a signed kernel driver that lets rztop read sensor data directly from the CPU. Supported on Intel and on AMD Zen and newer (Ryzen, Threadripper, EPYC). Without PawnIO, rztop runs normally and the temperature and power fields stay blank.
-
-### Install via winget
+CPU temperature and power come from [PawnIO](https://pawnio.eu), a signed kernel
+driver that lets rztop read the CPU's sensors. It supports Intel, and AMD Zen and
+newer. Without PawnIO those readings stay blank and everything else works.
 
 ```powershell
 winget install --id namazso.PawnIO
 ```
 
-After install, the PawnIO kernel driver and service are loaded automatically — no reboot required.
+Then run rztop as administrator (right-click `rztop.exe` → **Run as administrator**).
 
-### Run rztop as Administrator
+## GPU monitoring
 
-To see CPU temperature and power, launch rztop as Administrator (right-click `rztop.exe` → "Run as administrator", or open it from an elevated terminal). Without admin rights, rztop runs normally — the temperature and power rows just don't appear in the CPU widget.
-
----
-
-## GPU Monitoring
-
-rztop detects GPUs from all three major vendors automatically at runtime. For each detected device it reports **utilization, temperature, VRAM, power, and clocks**. Unlike CPU temperature and power, GPU monitoring needs no extra software beyond the vendor's graphics driver and no elevation.
+GPUs from all three vendors are detected at start-up. GPU monitoring needs only the
+vendor's graphics driver, and no elevation.
 
 | Vendor | Supported GPUs |
-|--------|---------------|
+|--------|----------------|
 | **NVIDIA** | GeForce 600 series (Kepler) and newer |
 | **AMD** | Vega and newer (RX Vega, 5000, 6000, 7000, 9000 series) |
 | **Intel** | Arc discrete GPUs |
 
-Mixed GPU systems show all detected devices. If a vendor's driver is not installed, that backend is silently skipped.
-
----
+If a vendor's driver is not installed, that backend is skipped.
 
 ## Configuration
 
-rztop stores its config at:
+rztop reads an optional config file and never writes it:
 
-| Location | Path |
-|----------|------|
-| Config | `%APPDATA%\rztop\rztop.toml` (or `$XDG_CONFIG_HOME/rztop/`) |
-| Logs | `%LOCALAPPDATA%\rztop\` (or `$XDG_STATE_HOME/rztop/`) |
+| What | Where |
+|------|-------|
+| Config | `%APPDATA%\rztop\rztop.toml` (or `$XDG_CONFIG_HOME\rztop\`) |
+| Log | `%LOCALAPPDATA%\rztop\rztop.log` (or `$XDG_STATE_HOME\rztop\`) |
+| Window and layout | `%APPDATA%\rztop desktop\data\app.ron` |
 
-The config file is created automatically on first run. Completed setting changes are saved immediately, with a final save on clean exit. All options are editable from the built-in options menu (`o` / `F2`).
-
-To print the default config:
-
-```powershell
-rztop --default-config
-```
-
-### Themes
-
-rztop ships with 41 built-in themes. Change the theme from the options menu (General → Color Theme) or set it in `rztop.toml`:
+An rtop `rtop.toml` can be copied over; keys the desktop app does not use are
+ignored. The keys it reads:
 
 ```toml
-color_theme = "dracula"
+color_theme = "default"        # any bundled theme, e.g. "dracula", "nord", "tokyo-night"
+update_ms = 2000               # refresh interval, 100..86400000
+base_10_sizes = false
+temp_scale = "celsius"         # celsius, fahrenheit, kelvin, rankine
+statusbar_clock_format = "%T"  # %T %R %H %I %M %S %p; "" hides the clock
+log_level = "warn"             # off, error, warn, info, debug, trace
+
+# Meter scales; 0 means automatic
+cpu_clock_max_mhz = 0
+gpu_clock_max_mhz = 0
+gpu_power_max_watts = 0        # e.g. your card's board power rating
+swap_max_mib = 0               # 0 = current pagefile allocation
+
+# Network
+net_iface = ""                 # adapter to show first
+net_auto = true                # auto-scale the graphs
+net_sync = false               # same scale for download and upload
+net_download = 100             # fixed scale when not auto-scaling, in KiB/s
+net_upload = 100
+
+# Disks and processes
+disk_filter = []               # e.g. ["C:", "!D:"]
+memory_sort_ram = false        # rank memory by RAM instead of commit
+io_sort = "total"              # read, write, total
+proc_per_core = false          # 100% = one logical core
 ```
 
-### Per-process memory and GPU counters
+### Notes on the data
 
-Process memory uses Windows private committed bytes. Resident RAM (working set)
-is collected separately. GPU usage is the busiest engine for each process across
-GPUs; dedicated GPU memory is summed across adapters. Unavailable GPU counters
-are reported as N/A.
-
-### Process rankings
-
-**Process rankings** in the Process options menu (`proc_rankings = true`) is
-enabled by default in this custom build. It displays five vertically stacked
-rankings: CPU, Memory, I/O, GPU, and VRAM. Memory defaults to Commit; click RAM or press M to sort by working set, and click Commit or press C to restore Commit sorting.
-The CPU and Memory panels show Program, CPU%, RAM, and Commit; the GPU panels
-show Program, GPU%, and VRAM. PID and command line are omitted.
-
-The primary columns use the CPU usage gradient; Memory highlights both RAM and
-Commit. CPU/GPU colors follow utilization percentages, Commit/RAM use percentages
-of system RAM, and VRAM uses total detected GPU memory. Secondary values remain
-muted and headers use the theme title color. The Process colors option disables
-gradients.
-
-The rankings share filtering (`f` / `/`) and pause (`Space`). This is a read-only
-monitoring view; turn it off to select, inspect, follow, or terminate processes.
-Settings are per-user, so copying an executable does not transfer them. Existing
-`proc_dual_view` settings remain accepted; saving writes `proc_rankings`.
-
-### CPU power display
-
-With `show_cpu_watts = true`, Watts appears below CPU, optional Clock, and optional Temperature. All visible Load rows are removed. Watts remains visible as N/A when the
-sensor is unavailable; supported sensors may require administrator privileges.
-
-### System memory and swap
-
-The Commit row shows system committed bytes / the current Windows commit limit
-from `GetPerformanceInfo`, replacing the redundant Free row. Available still
-reports immediately reclaimable physical RAM. Commit's meter uses the current
-commit limit, independently of the swap display scale.
-
-Swap data comes from `EnumPageFilesW`. The row is labeled **Swap**. `swap_max_mib = 0` shows actual used space
-against current page-file allocation. For example, `78M/5.0G` means 78 MiB used in a 5 GiB pagefile, not a 78 MiB file.
-A positive value shows allocated capacity
-against a reference growth ceiling in MiB, never below current allocation.
-This is display-only and does not change Windows paging settings. Determine the
-reference for the target machine rather than copying another PC's scale.
-
-### GPU power scale
-
-Set `gpu_power_max_watts` to your card's board-power rating (for example, `304`),
-or edit it under Options → GPU. The default, `0`, uses the collector's reference
-value. The scale applies to all displayed GPUs and does not change hardware power
-limits. AMD uses the optional driver sensor range for board power, or ASIC power when board power is unavailable. Missing or invalid ranges remain unknown. This graph reference can differ from advertised board power and the active cap.
-
-### Ping history
-
-The network panel charts ICMP latency to `1.1.1.1` below the traffic graphs, with
-the latest latency on the right. Set `RTOP_PING_TARGET` to another IPv4 address
-before launching to change the target. Probes follow the global update interval,
-including live changes, independently of a network-widget interval override.
-The reply timeout is one second; a timeout means no ICMP reply, not necessarily
-no internet connectivity.
-
-The graph auto-scales with a 10 ms minimum ceiling. A cross marks a failed probe.
-Up to 3600 samples are retained in memory (one hour at 1000 ms); the visible
-history depends on panel width. The graph fits within the existing net panel.
-
-### Per-Widget Update Intervals
-
-By default all widgets share the global `update_ms` interval (default 2000ms). Each widget can override this with its own interval:
-
-```toml
-update_ms = 2000
-cpu_update_ms = 1000     # CPU updates every 1s
-proc_update_ms = 5000    # Processes update every 5s
-mem_update_ms = 0        # 0 = use global (2000ms)
-gpu_update_ms = 500      # GPU widget polls every 500ms
-```
-
-Set per-widget intervals via the options menu (each category tab has an update interval option) or in `rztop.toml`.
-
-### Custom Layout
-
-Want a layout that's different from the built-in presets? rztop lets you describe one with a small expression that combines widgets with vertical (`vstack`) and horizontal (`hstack`) panels. You choose both **which widgets are visible** and **how they're arranged**, including how wide each column should be.
-
-The grammar:
-
-```
-layout := widget                                          # a single widget
-        | vstack(layout, layout, ...)                     # children stacked top-to-bottom
-        | hstack(weight:layout, weight:layout, ...)       # children laid out left-to-right
-                                                          # weight is 1..255 (relative width share)
-```
-
-Widgets are `cpu`, `mem`, `net`, `proc`, `disk`, and `gpu`. Each widget appears at most once.
-
-Edit the custom layout two ways:
-
-1. **Options menu** (`o` or `F2`) → general → `custom_layout` — type a new expression and press Enter. Cycle to the `custom` preset (`p` / `P`) to see the result.
-2. **`rztop.toml`** — set `preset = "custom"` and edit the `custom_layout` string at the top level.
-
-#### Example 1 — minimal
-
-CPU graph on top, processes filling the rest:
-
-```toml
-preset = "custom"
-custom_layout = "vstack(cpu, proc)"
-```
-
-#### Example 2 — two-column dashboard with custom proportions
-
-CPU spans the full width on top. Below, a left column stacks memory, network, and disk; the right column is the process list. The 40/60 weights give processes 60% of the width:
-
-```toml
-preset = "custom"
-custom_layout = "vstack(cpu, hstack(40:vstack(mem, net, disk), 60:proc))"
-```
-
-### Hiding widgets at runtime
-
-The number keys (`1`–`6` for cpu/mem/net/proc/disk/gpu) hide and restore individual widgets in the active layout. Hidden widgets stay hidden across preset cycles and across restarts (the filter is persisted in `rztop.toml`). Press `Shift+R` to restore everything in one keypress. The statusbar shows a `*` next to the preset name when any widget is hidden, so the filter never feels invisible.
-
-Hide is purely a viewing operation — it never modifies your saved layout. The custom layout is only changed by the two paths above.
-
-### Statusbar
-
-The **statusbar** is a single-row bar that sits at the bottom of every preset. It keeps the things you reach for most often always visible, without taking space away from the widgets above it.
-
-What it shows:
-
-| Side | Item | Description |
-|------|------|-------------|
-| Left | Menu hint | `menu` keybind reminder |
-| Left | Preset cycler | `← P NAME p →` — the active preset name; an asterisk after the name means at least one widget is hidden |
-| Left | Update interval | `─ Nms +` — the global refresh rate |
-| Right | Uptime | `up Xd HH:MM` — time since boot |
-| Right | Clock | the current time, in your chosen format |
-
-Every item can be turned on or off individually from the options menu (`o` / `F2` → Statusbar), and the whole bar can be hidden with one toggle if you want every row for widgets:
-
-```toml
-show_statusbar = true                  # master toggle
-statusbar_show_menu = true
-statusbar_show_preset = true
-statusbar_show_update_interval = true
-statusbar_show_uptime = true
-statusbar_show_clock = true
-statusbar_clock_format = "%T"          # see Clock format below
-```
-
-**Clock format.** The clock accepts a small subset of strftime specifiers — enough for any time-of-day layout you'd want in a status bar:
-
-| Token | Meaning |
-|-------|---------|
-| `%T` | full time, `HH:MM:SS` |
-| `%R` | short time, `HH:MM` |
-| `%H` | hour, 24-hour (`00`–`23`) |
-| `%I` | hour, 12-hour (`01`–`12`) |
-| `%M` | minute (`00`–`59`) |
-| `%S` | second (`00`–`59`) |
-| `%p` | `AM` or `PM` |
-
-Examples: `"%T"` → `13:24:05`, `"%I:%M %p"` → `01:24 PM`, `"%R"` → `13:24`. Set the format to an empty string to hide the clock without disabling the right section.
-
-**Position is up to you.** The statusbar is a regular widget, so the [custom layout](#custom-layout) DSL can place `statusbar` anywhere — top, bottom, or beside another panel. The built-in presets put it at the bottom by default.
-
----
-
-## Command Line Options
-
-```
-Usage: rztop [OPTIONS]
-
-Options:
-  -c, --config <FILE>     Path to config file
-      --import-config <FILE> Import legacy config into rztop's default location
-  -f, --filter <TEXT>     Initial process filter
-  -u, --update <MS>       Update interval in milliseconds (min 100)
-      --default-config    Print default config and exit
-  -h, --help              Print help
-  -V, --version           Print version
-```
-
----
+- **Process memory** is private committed bytes (Commit); RAM is the working set.
+- **Process GPU** is the busiest engine per process across GPUs; VRAM is dedicated memory summed across adapters.
+- **Process I/O** is general Windows I/O (file, network, devices), not only disk throughput. A rate needs two samples of the same process.
+- **Swap** comes from `EnumPageFilesW`. `swap_max_mib` only changes the display scale, never Windows paging settings.
+- **Ping** probes `1.1.1.1` once per refresh with a one-second timeout. Set the `RTOP_PING_TARGET` environment variable to another IPv4 address to change it.
+- **Clock and power scales** never change hardware settings. See [AMD API notes](docs/amd-references.md).
 
 ## Acknowledgments
 
-- [btop](https://github.com/aristocratos/btop) by aristocratos — the original system monitor that inspired rztop's UI design
-- [crossterm](https://github.com/crossterm-rs/crossterm) — terminal I/O
-- [windows-rs](https://github.com/microsoft/windows-rs) — Windows API bindings
-- [PawnIO](https://pawnio.eu) by namazso — signed kernel driver for CPU MSR access
-- [PawnIO.Modules](https://github.com/namazso/PawnIO.Modules) — `IntelMSR` and `AMDFamily17` bytecode modules embedded by rztop, licensed under LGPL-2.1-or-later
-
----
+- [rtop](https://github.com/freddiehaddad/rtop) by Freddie Haddad, which rztop is forked from
+- [btop](https://github.com/aristocratos/btop) by aristocratos, which inspired rtop's design
+- [egui](https://github.com/emilk/egui) and [egui_dock](https://github.com/Adanos020/egui_dock) for the window and docking
+- [windows-rs](https://github.com/microsoft/windows-rs) for the Windows API bindings
+- [PawnIO](https://pawnio.eu) by namazso, the signed kernel driver for CPU sensor access
+- [PawnIO.Modules](https://github.com/namazso/PawnIO.Modules): the `IntelMSR` and `AMDFamily17` modules embedded by rztop, licensed under LGPL-2.1-or-later
 
 ## License
 
-[GPL-2.0-or-later](LICENSE)
-
-### Settings persistence and migration
-
-Completed settings changes save immediately; navigation and unchanged values do not write the file. Inline edits save on confirmation. A custom configuration selected with --config remains the save destination. Failed saves are logged and retried at the next save opportunity.
-
-Use rztop --import-config PATH to import an existing rtop TOML file into the new default configuration location. Import refuses to overwrite an existing rztop config or accept invalid source settings. The source file is preserved. Use --config PATH instead only if you want that file to remain the active read/write configuration.
-
-### CPU and GPU Clock meters
-
-`show_cpu_freq` controls the CPU Clock meter directly below total usage. Its numeric reading is estimated from Windows performance counters, falling back to registry base frequency when unavailable. `cpu_clock_max_mhz = 0` uses the highest sample this session, not a hardware boost limit. A positive value fixes the scale. Missing readings display N/A. Frequency no longer appears in the Cores divider.
-
-`gpu_clock_max_mhz = 0` uses the driver's clock reference; AMD optionally supplies the observed boost clock. A positive value overrides the display scale for every GPU. Both settings accept 0–10000 MHz, clamp meter fill to 100%, and never change hardware settings. See [AMD API verification](docs/amd-references.md).
-
-### General process I/O
-
-The I/O ranking shows Program, Read/s, Write/s and Total (read + write per second). Total is the default descending sort; click a heading or press I / O / Y to select Read / Write / Total. The arrow marks the selected column and `io_sort` persists it. Ties use PID; unknown values follow known values. Each value uses an absolute CPU-gradient scale from zero to 5,000,000 bytes/s (5 MB/s), clamped at the top; filtering no longer changes the colors. These are general Windows process I/O rates (file, network and devices), not physical disk throughput. Rates require two successful samples with matching PID and creation time and use actual elapsed time. Unavailable or invalid samples display N/A.
-
-### Mouse controls and resizing
-
-Click visible keyboard controls to invoke the same actions. Hovered buttons are underlined. Options support tabs, row selection, value editing, adjustment/page arrows, and close/save/cancel; text entry uses the keyboard. Modal dialogs isolate their controls from underlying widgets. Pasted text is ignored; right-click never reads the clipboard.
-
-Drag either adjoining outline at a widget divider to resize adjacent panels. Nested row/column stacks and individual process ranking heights are supported. Minimum sizes are enforced, hidden widgets take no space, and the statusbar remains one row high. Five ranking panels require at least 25 rows. Right-click a widget divider to reset that stack; right-click a ranking divider to restore equal ranking heights. Drag changes save on release. Resize, keyboard transitions, or incompatible data/layout changes cancel unfinished drags.
-
-Divider hover uses `=` horizontally and `║` vertically. Paired arrows follow the pointer, choosing the nearest clear pair when captions, corners or buttons occupy that location. Saved stack proportions apply only to the same layout signature. Existing four-panel `process_weights` retain CPU/Memory/GPU/VRAM proportions; `io_weight = 0` inserts their average for I/O.
-
-### rztop CPU usage
-
-The statusbar shows rztop's own CPU percentage as `rztop CPU x.x%` before uptime, using the existing live process collector even when rankings are paused or filtered. It follows the process panel's `c` toggle: total machine CPU capacity by default, or one logical core = 100% in per-core mode (which can exceed 100%). The additional item is omitted when space is tight so it does not increase the minimum terminal width or overlap controls.
-
-### Permission status
-
-The statusbar shows `not admin: limited data` when Windows confirms rztop is not elevated and a process, pagefile, or PawnIO device query has reported access denied. The notice remains for the session because hardware discovery can fail only once at startup. Missing drivers, unsupported sensors and unknown elevation state alone do not trigger it. Running as administrator may allow more readings, but does not guarantee access to protected processes. rztop never elevates itself automatically. The notice takes priority over optional right-side status items when space is tight; it never overwrites controls.
-
-## Desktop docking prototype
-
-Run `cargo run --release --features desktop --bin rztop-desktop` for the native three-panel prototype. It samples CPU, GPU and per-process I/O every second. Drag a panel caption onto the highlighted side of another panel to split it there, or onto the center to group the panels as tabs. Drag a separator to resize. The desktop window restores its saved arrangement when reopened. **Reset layout** restores CPU above GPU and I/O.
-
-The terminal frontend remains the default Cargo target. Each frontend has its own window and layout settings.
+[GPL-2.0-or-later](LICENSE). The original rtop code is copyright (C) 2026 Freddie Haddad.
