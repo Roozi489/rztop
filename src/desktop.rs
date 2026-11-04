@@ -84,14 +84,25 @@ impl Panel {
         match self {
             Panel::Cpu => "CPU",
             Panel::Gpu => "GPU",
-            Panel::Io => "I/O processes",
+            Panel::Io => "I/O",
             Panel::Mem => "Memory",
             Panel::Disk => "Disks",
             Panel::Net => "Network",
-            Panel::CpuProcs => "CPU processes",
-            Panel::MemProcs => "Memory processes",
-            Panel::GpuProcs => "GPU processes",
-            Panel::VramProcs => "VRAM processes",
+            Panel::CpuProcs => "CPU",
+            Panel::MemProcs => "Memory",
+            Panel::GpuProcs => "GPU",
+            Panel::VramProcs => "VRAM",
+        }
+    }
+
+    fn ranking(self) -> Option<Ranking> {
+        match self {
+            Panel::CpuProcs => Some(Ranking::Cpu),
+            Panel::MemProcs => Some(Ranking::Mem),
+            Panel::Io => Some(Ranking::Io),
+            Panel::GpuProcs => Some(Ranking::Gpu),
+            Panel::VramProcs => Some(Ranking::Vram),
+            _ => None,
         }
     }
 
@@ -230,6 +241,8 @@ struct Look {
     cpu_upper: Gradient,
     cpu_lower: Gradient,
     temp: Gradient,
+    /// Warning text, e.g. the not-admin notice.
+    warn: Color32,
     gpu: Gradient,
     gpu_clock: Gradient,
     gpu_power: Gradient,
@@ -276,6 +289,8 @@ impl Look {
             cpu_upper: Gradient::new(&g.cpu_upper),
             cpu_lower: Gradient::new(&g.cpu_lower),
             temp: Gradient::new(&g.temp),
+            // The temperature ramp passes yellow/orange around its middle.
+            warn: Gradient::new(&g.temp).at(60),
             gpu: Gradient::new(&g.gpu),
             gpu_clock: Gradient::new(&g.gpu_clock),
             gpu_power: Gradient::new(&g.gpu_power),
@@ -704,7 +719,7 @@ impl Desktop {
                 }
                 if status.is_some_and(|s| s.admin_limited) {
                     ui.add_space(6.0);
-                    ui.label(text("not admin: limited data", look.hi));
+                    ui.label(text("not admin: limited data", look.warn));
                 }
             });
         });
@@ -1791,50 +1806,21 @@ fn column_edges(right: f32, columns: &[Column], cw: f32) -> Vec<f32> {
 type Cell = (String, Color32);
 
 /// Program column plus fixed-width value columns; only visible rows are
-/// built. Returns the index of a clicked sortable header.
+/// built.
 fn table(
     ui: &mut Ui,
     look: &Look,
     columns: &[Column],
     rows: usize,
     cell: impl Fn(usize) -> (String, Vec<Cell>),
-) -> Option<usize> {
+) {
+    // The column headings are on the caption row (`ranking_header`).
     let cw = char_width(ui);
-    let header = row(ui);
-    let edges = column_edges(header.right(), columns, cw);
-    let cy = header.center().y;
-    ui.painter().text(
-        header.left_center(),
-        Align2::LEFT_CENTER,
-        "Program",
-        mono(),
-        look.fg,
-    );
-    let mut clicked = None;
-    for (i, (column, &edge)) in columns.iter().zip(&edges).enumerate() {
-        ui.painter().text(
-            pos2(edge, cy),
-            Align2::RIGHT_CENTER,
-            column.header,
-            mono(),
-            look.fg,
-        );
-        if column.clickable {
-            let rect = Rect::from_min_max(
-                pos2(edge - column.chars * cw, header.top()),
-                pos2(edge, header.bottom()),
-            );
-            let response = ui
-                .interact(rect, ui.id().with(("sort", i)), Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-            if response.clicked() {
-                clicked = Some(i);
-            }
-        }
-    }
+    let right = ui.max_rect().right();
+    let edges = column_edges(right, columns, cw);
     let name_right = match (edges.first(), columns.first()) {
         (Some(edge), Some(first)) => edge - first.chars * cw - cw,
-        _ => header.right(),
+        _ => right,
     };
     egui::ScrollArea::vertical()
         .auto_shrink(false)
@@ -1857,7 +1843,6 @@ fn table(
                 }
             }
         });
-    clicked
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1929,38 +1914,8 @@ fn ranking_panel(
         p.gpu_mem
             .map_or_else(|| "N/A".to_owned(), |v| look.bytes(v))
     };
-    let arrow =
-        |on: bool, with: &'static str, without: &'static str| if on { with } else { without };
-
-    let mut columns = match ranking {
-        Ranking::Cpu => vec![
-            column("CPU%▼", 7.0),
-            column("RAM", 11.0),
-            column("Commit", 11.0),
-        ],
-        Ranking::Mem => vec![
-            column("CPU%", 7.0),
-            column(arrow(sorts.mem_ram, "RAM▼", "RAM"), 11.0),
-            column(arrow(!sorts.mem_ram, "Commit▼", "Commit"), 11.0),
-        ],
-        Ranking::Gpu => vec![column("GPU%▼", 7.0), column("VRAM", 11.0)],
-        Ranking::Vram => vec![column("GPU%", 7.0), column("VRAM▼", 11.0)],
-        Ranking::Io => vec![
-            column(arrow(sorts.io == IoSort::Read, "Read/s▼", "Read/s"), 12.0),
-            column(
-                arrow(sorts.io == IoSort::Write, "Write/s▼", "Write/s"),
-                12.0,
-            ),
-            column(arrow(sorts.io == IoSort::Total, "Total▼", "Total"), 12.0),
-        ],
-    };
-    match ranking {
-        Ranking::Mem => columns[1..].iter_mut().for_each(|c| c.clickable = true),
-        Ranking::Io => columns.iter_mut().for_each(|c| c.clickable = true),
-        _ => {}
-    }
-
-    let clicked = table(ui, look, &columns, list.len(), |i| {
+    let columns = ranking_columns(ranking, sorts);
+    table(ui, look, &columns, list.len(), |i| {
         let p = list[i];
         let values = match ranking {
             Ranking::Cpu => {
@@ -1998,12 +1953,51 @@ fn ranking_panel(
         };
         (p.name.clone(), values)
     });
-    match (ranking, clicked) {
-        (Ranking::Mem, Some(i)) => sorts.mem_ram = i == 1,
-        (Ranking::Io, Some(i)) => sorts.io = [IoSort::Read, IoSort::Write, IoSort::Total][i],
+    0.0
+}
+
+/// Value columns of a ranking; the sorted one carries ▼. Memory's RAM /
+/// Commit and all I/O columns are clickable to change the sort.
+fn ranking_columns(ranking: Ranking, sorts: &Sorts) -> Vec<Column> {
+    let arrow =
+        |on: bool, with: &'static str, without: &'static str| if on { with } else { without };
+    let mut columns = match ranking {
+        Ranking::Cpu => vec![
+            column("CPU%▼", 7.0),
+            column("RAM", 11.0),
+            column("Commit", 11.0),
+        ],
+        Ranking::Mem => vec![
+            column("CPU%", 7.0),
+            column(arrow(sorts.mem_ram, "RAM▼", "RAM"), 11.0),
+            column(arrow(!sorts.mem_ram, "Commit▼", "Commit"), 11.0),
+        ],
+        Ranking::Gpu => vec![column("GPU%▼", 7.0), column("VRAM", 11.0)],
+        Ranking::Vram => vec![column("GPU%", 7.0), column("VRAM▼", 11.0)],
+        Ranking::Io => vec![
+            column(arrow(sorts.io == IoSort::Read, "Read/s▼", "Read/s"), 12.0),
+            column(
+                arrow(sorts.io == IoSort::Write, "Write/s▼", "Write/s"),
+                12.0,
+            ),
+            column(arrow(sorts.io == IoSort::Total, "Total▼", "Total"), 12.0),
+        ],
+    };
+    match ranking {
+        Ranking::Mem => columns[1..].iter_mut().for_each(|c| c.clickable = true),
+        Ranking::Io => columns.iter_mut().for_each(|c| c.clickable = true),
         _ => {}
     }
-    0.0
+    columns
+}
+
+/// A click on column `i` of a ranking's header.
+fn sort_by_column(ranking: Ranking, sorts: &mut Sorts, i: usize) {
+    match ranking {
+        Ranking::Mem => sorts.mem_ram = i == 1,
+        Ranking::Io => sorts.io = [IoSort::Read, IoSort::Write, IoSort::Total][i],
+        _ => {}
+    }
 }
 
 struct Panels<'a> {
@@ -2019,6 +2013,59 @@ struct Panels<'a> {
 }
 
 impl Panels<'_> {
+    /// A ranking's column headings on its caption row, aligned with the
+    /// value columns below (the body is inset by the same 8 px margin). The
+    /// caption stands where the terminal shows "Program". Sortable headings
+    /// take clicks, read from the pointer since egui_dock owns tab presses.
+    fn ranking_header(
+        &mut self,
+        ranking: Ranking,
+        response: &egui::Response,
+        painter: &egui::Painter,
+    ) {
+        let look = self.look;
+        let columns = ranking_columns(ranking, self.sorts);
+        let cw = painter
+            .layout_no_wrap("0".to_owned(), mono(), look.fg)
+            .size()
+            .x;
+        let tab = response.rect;
+        let edges = column_edges(tab.right() - 8.0, &columns, cw);
+        let cy = tab.center().y;
+        let ctx = &response.ctx;
+        let (click, hover) = ctx.input(|i| {
+            (
+                i.pointer
+                    .primary_clicked()
+                    .then(|| i.pointer.interact_pos())
+                    .flatten(),
+                i.pointer.hover_pos(),
+            )
+        });
+        for (i, (column, &edge)) in columns.iter().zip(&edges).enumerate() {
+            painter.text(
+                pos2(edge, cy),
+                Align2::RIGHT_CENTER,
+                column.header,
+                mono(),
+                look.fg,
+            );
+            if column.clickable {
+                let rect = Rect::from_min_max(
+                    pos2(edge - column.chars * cw, tab.top()),
+                    pos2(edge, tab.bottom()),
+                );
+                if hover.is_some_and(|p| rect.contains(p)) {
+                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if click.is_some_and(|p| rect.contains(p)) {
+                    sort_by_column(ranking, self.sorts, i);
+                    ctx.request_repaint();
+                }
+            }
+        }
+    }
+
     /// Right-aligned panel info on the caption row: the CPU and GPU names,
     /// total memory and the network adapter. GPU and network get ◀ ▶
     /// selectors when there are several; a click on either arrow cycles. The
@@ -2031,6 +2078,10 @@ impl Panels<'_> {
         painter: &egui::Painter,
         caption_right: f32,
     ) {
+        if let Some(ranking) = panel.ranking() {
+            self.ranking_header(ranking, response, painter);
+            return;
+        }
         let Some(sample) = self.sample.clone() else {
             return;
         };
