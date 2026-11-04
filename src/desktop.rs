@@ -47,8 +47,6 @@ const ROW: f32 = 18.0;
 /// Spacing between graph dots, horizontally and vertically.
 const DOT: f32 = 4.0;
 const FONT_SIZE: f32 = 13.0;
-/// Characters reserved for a meter's value, e.g. `154 MB/5.00 GB`.
-const METER_VALUE_CHARS: f32 = 16.0;
 /// Absolute full-colour I/O rate, matching the terminal rankings.
 const IO_FULL_SCALE: u64 = 5_000_000;
 
@@ -754,6 +752,25 @@ fn segment_cells(left: f32, width: f32, pixels_per_point: f32) -> Vec<(f32, f32)
         .collect()
 }
 
+/// Characters reserved for meter values in this panel: the widest value seen
+/// so far, so every bar in the panel ends at one column just before its
+/// value. It only grows, so bars don't jump when a value gains a digit; a
+/// row wider than the stored width asks for a redraw so earlier rows follow.
+fn meter_value_chars(ui: &Ui, value: &str) -> usize {
+    let id = ui.id().with("meter-value-chars");
+    let need = value.chars().count().max(4);
+    let (width, grew) = ui.data_mut(|data| {
+        let width = data.get_temp_mut_or(id, 0usize);
+        let grew = need > *width;
+        *width = (*width).max(need);
+        (*width, grew)
+    });
+    if grew {
+        ui.ctx().request_repaint();
+    }
+    width
+}
+
 /// `Label ■■■■■■■····  value` row. A missing percentage draws no meter.
 fn meter_row(
     ui: &mut Ui,
@@ -765,6 +782,7 @@ fn meter_row(
 ) {
     let rect = row(ui);
     let cw = char_width(ui);
+    let value_chars = meter_value_chars(ui, value);
     let painter = ui.painter();
     painter.text(
         rect.left_center(),
@@ -786,7 +804,7 @@ fn meter_row(
     let bar = Rect::from_min_max(
         pos2(rect.left() + label_chars as f32 * cw, rect.top() + 4.0),
         pos2(
-            rect.right() - (METER_VALUE_CHARS + 1.0) * cw,
+            rect.right() - (value_chars as f32 + 1.0) * cw,
             rect.bottom() - 4.0,
         ),
     );
