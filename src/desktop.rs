@@ -1056,7 +1056,7 @@ enum Grow {
 
 /// Braille-style dot graph with the newest sample at the right edge. Each
 /// column is one sample; each dot takes the gradient colour of its height.
-/// Columns without history show the zero baseline.
+/// Columns without history stay empty.
 fn dot_graph(painter: &Painter, rect: Rect, series: &VecDeque<i64>, grow: Grow, grad: &Gradient) {
     dot_graph_scaled(painter, rect, series, grow, grad, 100);
 }
@@ -1094,10 +1094,11 @@ fn dot_graph_scaled(
         return;
     }
     let max = max.max(1) as f32;
+    // Columns before the first sample stay empty: dots appear as data does.
     let skip = series.len().saturating_sub(cols);
     let pad = cols - (series.len() - skip);
-    let values = std::iter::repeat_n(0, pad).chain(series.iter().skip(skip).copied());
-    for (col, value) in values.enumerate() {
+    for (col, value) in series.iter().skip(skip).copied().enumerate() {
+        let col = pad + col;
         let x = rect.right() - (cols - col) as f32 * DOT + DOT / 2.0;
         let fraction = (value.max(0) as f32 / max).min(1.0);
         let height = (fraction * rows as f32).round() as usize;
@@ -1734,6 +1735,9 @@ fn ping_row(ui: &mut Ui, look: &Look, status: &StatusbarInfo) {
         look.fg,
     );
     let value = status.ping.strip_prefix("ping ").unwrap_or("...");
+    // Like the meters: the graph ends one column before the widest value seen.
+    let value_chars = meter_value_chars(ui, value) as f32;
+    let painter = ui.painter();
     painter.text(
         line.right_center(),
         Align2::RIGHT_CENTER,
@@ -1743,7 +1747,7 @@ fn ping_row(ui: &mut Ui, look: &Look, status: &StatusbarInfo) {
     );
     let graph = Rect::from_min_max(
         pos2(line.left() + 5.0 * cw, line.top() + 1.0),
-        pos2(line.right() - 9.0 * cw, line.bottom() - 1.0),
+        pos2(line.right() - (value_chars + 1.0) * cw, line.bottom() - 1.0),
     );
     let cols = graph_columns(graph.width());
     if cols == 0 {
@@ -2265,6 +2269,67 @@ fn load_config() -> Config {
     config
 }
 
+/// Window and taskbar icon: a few columns of graph dots on the theme
+/// background, each dot coloured by its height with the gradient of the
+/// Cores mini graphs, like a tiny CPU history.
+fn app_icon(look: &Look) -> egui::IconData {
+    const SIZE: usize = 64;
+    const HEIGHTS: [usize; 6] = [2, 4, 3, 6, 4, 5];
+    const ROWS: usize = 6;
+    const STEP: f32 = 9.0;
+    const RADIUS: f32 = 3.1;
+    let margin = (SIZE as f32 - STEP * HEIGHTS.len() as f32) / 2.0;
+    // Coverage of a signed distance (negative inside), antialiased over a pixel.
+    let cover = |d: f32| (0.5 - d).clamp(0.0, 1.0);
+    let over = |dst: [f32; 4], src: Color32, a: f32| {
+        let s = [src.r(), src.g(), src.b()].map(|c| f32::from(c) / 255.0);
+        let out_a = a + dst[3] * (1.0 - a);
+        let mut out = [0.0; 4];
+        for i in 0..3 {
+            out[i] = if out_a > 0.0 {
+                (s[i] * a + dst[i] * dst[3] * (1.0 - a)) / out_a
+            } else {
+                0.0
+            };
+        }
+        out[3] = out_a;
+        out
+    };
+    let mut rgba = Vec::with_capacity(SIZE * SIZE * 4);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            // Rounded-square background with a faint border.
+            let half = SIZE as f32 / 2.0;
+            let (qx, qy) = (
+                (px - half).abs() - (half - 12.0),
+                (py - half).abs() - (half - 12.0),
+            );
+            let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
+            let d = outside + qx.max(qy).min(0.0) - 12.0;
+            let mut c = over([0.0; 4], look.dim, cover(d));
+            c = over(c, look.bg, cover(d + 1.5));
+            for (col, &height) in HEIGHTS.iter().enumerate() {
+                for row in 0..height {
+                    let cx = margin + (col as f32 + 0.5) * STEP;
+                    let cy = SIZE as f32 - margin - (row as f32 + 0.5) * STEP;
+                    let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - RADIUS;
+                    if dist < 1.0 {
+                        let color = look.cpu_upper.at(((row + 1) * 100 / ROWS) as i64);
+                        c = over(c, color, cover(dist));
+                    }
+                }
+            }
+            rgba.extend(c.map(|v| (v * 255.0).round() as u8));
+        }
+    }
+    egui::IconData {
+        rgba,
+        width: SIZE as u32,
+        height: SIZE as u32,
+    }
+}
+
 pub fn run_desktop() -> eframe::Result {
     let config = load_config();
     let look = Look::new(&config);
@@ -2283,7 +2348,8 @@ pub fn run_desktop() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1150.0, 975.0])
-            .with_min_inner_size([410.0, 320.0]),
+            .with_min_inner_size([410.0, 320.0])
+            .with_icon(app_icon(&look)),
         ..Default::default()
     };
     eframe::run_native(
@@ -2408,6 +2474,20 @@ mod tests {
         // Nothing to fit until every left-column panel has been measured.
         fits[Panel::Disk.index()].content = 0.0;
         assert_eq!(fit_fractions(900.0, &fits), None);
+    }
+
+    #[test]
+    fn icon_is_a_rounded_square_with_coloured_dots() {
+        let look = Look::new(&Config::new());
+        let icon = app_icon(&look);
+        assert_eq!((icon.width, icon.height), (64, 64));
+        assert_eq!(icon.rgba.len(), 64 * 64 * 4);
+        let alpha = |x: usize, y: usize| icon.rgba[(y * 64 + x) * 4 + 3];
+        assert_eq!(alpha(0, 0), 0, "corners are transparent");
+        assert_eq!(alpha(32, 32), 255, "body is opaque");
+        if let Ok(path) = std::env::var("RZTOP_ICON_OUT") {
+            std::fs::write(path, &icon.rgba).unwrap();
+        }
     }
 
     #[test]
