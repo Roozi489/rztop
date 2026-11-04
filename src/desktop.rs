@@ -47,6 +47,8 @@ const ROW: f32 = 18.0;
 /// Spacing between graph dots, horizontally and vertically.
 const DOT: f32 = 4.0;
 const FONT_SIZE: f32 = 13.0;
+/// Characters reserved for a meter's value, e.g. `154 MiB/5.00 GiB`.
+const METER_VALUE_CHARS: f32 = 16.0;
 /// Absolute full-colour I/O rate, matching the terminal rankings.
 const IO_FULL_SCALE: u64 = 5_000_000;
 
@@ -214,11 +216,21 @@ impl Look {
     }
 
     fn bytes(&self, value: u64) -> String {
-        crate::tools::floating_humanizer(value, true, 0, false, false, self.base_10)
+        crate::tools::floating_humanizer(value, false, 0, false, false, self.base_10)
+    }
+
+    /// `used/total` with full units, sharing the unit when both match:
+    /// `28.0/37.0 GiB`, but `154 MiB/5.00 GiB`.
+    fn pair(&self, used: u64, total: u64) -> String {
+        let (used, total) = (self.bytes(used), self.bytes(total));
+        match (used.split_once(' '), total.split_once(' ')) {
+            (Some((a, unit)), Some((b, other))) if unit == other => format!("{a}/{b} {unit}"),
+            _ => format!("{used}/{total}"),
+        }
     }
 
     fn rate(&self, value: u64) -> String {
-        crate::tools::floating_humanizer(value, true, 0, false, true, self.base_10)
+        crate::tools::floating_humanizer(value, false, 0, false, true, self.base_10)
     }
 
     fn temp(&self, celsius: i64) -> String {
@@ -347,6 +359,56 @@ impl Drop for Monitor {
     }
 }
 
+/// One `[body]` statusbar item drawn as a single label, so a right-to-left
+/// layout cannot reorder its brackets. Leaves a gap after the previous item.
+fn status_item(
+    ui: &mut Ui,
+    look: &Look,
+    body: &str,
+    color: Color32,
+    sense: Sense,
+) -> egui::Response {
+    let mut job = egui::text::LayoutJob::default();
+    for (part, color) in [
+        ("[", look.statusbar_sep),
+        (body, color),
+        ("]", look.statusbar_sep),
+    ] {
+        job.append(
+            part,
+            0.0,
+            egui::TextFormat {
+                font_id: mono(),
+                color,
+                ..Default::default()
+            },
+        );
+    }
+    ui.add_space(6.0);
+    ui.add(egui::Label::new(job).selectable(false).sense(sense))
+}
+
+/// Start this executable again through the UAC prompt ("runas"). Returns
+/// false when the user declines or the launch fails.
+fn relaunch_as_admin() -> bool {
+    use windows::{
+        Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+        core::{HSTRING, PCWSTR, w},
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let dir = exe.parent().map(HSTRING::from).unwrap_or_default();
+    let exe = HSTRING::from(exe.as_path());
+    // SAFETY: every string argument is a NUL-terminated wide string owned by
+    // this frame (or a static literal) and outlives the call; no owner window
+    // and no parameters are passed.
+    let result =
+        unsafe { ShellExecuteW(None, w!("runas"), &exe, PCWSTR::null(), &dir, SW_SHOWNORMAL) };
+    // ShellExecuteW signals success with a value greater than 32.
+    result.0 as usize > 32
+}
+
 /// Same steps and bounds as the terminal's `-` / `+` refresh keys.
 fn step_interval(ms: u64, up: bool) -> u64 {
     let step = if ms > 2000 { 1000 } else { 100 };
@@ -400,6 +462,7 @@ impl Desktop {
             clicked
         };
         let mut reset = false;
+        let mut elevate = false;
         let mut step = None;
         ui.horizontal(|ui| {
             reset = chip(ui, &[("reset layout", look.statusbar_hi, true)]).is_some();
@@ -418,24 +481,7 @@ impl Desktop {
                 // Right-to-left: the first item drawn is the rightmost. Each item is
                 // one label so the layout direction cannot reorder its brackets.
                 let item = |ui: &mut Ui, body: &str| {
-                    let mut job = egui::text::LayoutJob::default();
-                    for (part, color) in [
-                        ("[", look.statusbar_sep),
-                        (body, look.statusbar_fg),
-                        ("]", look.statusbar_sep),
-                    ] {
-                        job.append(
-                            part,
-                            0.0,
-                            egui::TextFormat {
-                                font_id: mono(),
-                                color,
-                                ..Default::default()
-                            },
-                        );
-                    }
-                    ui.add_space(6.0);
-                    ui.add(egui::Label::new(job).selectable(false));
+                    status_item(ui, look, body, look.statusbar_fg, Sense::hover());
                 };
                 let clock = crate::tools::format_clock(&look.clock_format);
                 if !clock.is_empty() {
@@ -458,6 +504,13 @@ impl Desktop {
                 });
                 let own = format!("rztop CPU {}", own.as_deref().unwrap_or("N/A"));
                 item(ui, &own);
+                // The relaunch button sits right after the notice it resolves.
+                if crate::collect::permissions::is_elevated() == Some(false) {
+                    elevate =
+                        status_item(ui, look, "run as admin", look.statusbar_hi, Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked();
+                }
                 if status.is_some_and(|s| s.admin_limited) {
                     ui.add_space(6.0);
                     ui.label(text("not admin: limited data", look.hi));
@@ -466,6 +519,11 @@ impl Desktop {
         });
         if reset {
             self.dock = initial_layout();
+        }
+        // Closing saves the layout, so the elevated instance reopens it. If the
+        // UAC prompt is declined this instance simply keeps running.
+        if elevate && relaunch_as_admin() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if let Some(i) = step {
             let ms = self.monitor.interval.load(Relaxed);
@@ -633,25 +691,44 @@ fn filled_cells(pct: i64, cells: usize) -> usize {
 /// Segmented meter. Lit cells take the gradient colour of their position,
 /// so a full bar runs from the gradient start to its end.
 fn segments(painter: &Painter, rect: Rect, pct: i64, grad: &Gradient, off: Color32) {
-    const PITCH: f32 = 7.0;
-    const GAP: f32 = 1.5;
-    let cells = ((rect.width() + GAP) / PITCH).floor().max(1.0) as usize;
-    let width = (rect.width() - GAP * (cells - 1) as f32) / cells as f32;
-    let lit = filled_cells(pct, cells);
-    let last = cells.saturating_sub(1).max(1);
-    for i in 0..cells {
+    let ppp = painter.pixels_per_point();
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let cells = segment_cells(rect.left(), rect.width(), ppp);
+    let lit = filled_cells(pct, cells.len());
+    let last = cells.len().saturating_sub(1).max(1);
+    let (top, bottom) = (snap(rect.top()), snap(rect.bottom()));
+    for (i, (left, right)) in cells.into_iter().enumerate() {
         let color = if i < lit {
             grad.at((i * 100 / last) as i64)
         } else {
             off
         };
-        let x = rect.left() + i as f32 * (width + GAP);
         painter.rect_filled(
-            Rect::from_min_size(pos2(x, rect.top()), vec2(width, rect.height())),
+            Rect::from_min_max(pos2(left, top), pos2(right, bottom)),
             CornerRadius::same(1),
             color,
         );
     }
+}
+
+/// Left/right edges of each meter cell, in points but aligned to whole
+/// physical pixels. Every cell and every gap has the same pixel width, so
+/// the bar looks evenly spaced at any display scale; any remainder smaller
+/// than one cell is left empty at the right end.
+fn segment_cells(left: f32, width: f32, pixels_per_point: f32) -> Vec<(f32, f32)> {
+    let ppp = pixels_per_point.max(0.25);
+    let cell = (5.5 * ppp).round().max(2.0);
+    let gap = (1.5 * ppp).round().max(1.0);
+    let start = (left * ppp).round();
+    let count = (((width * ppp).floor() + gap) / (cell + gap))
+        .floor()
+        .max(1.0) as usize;
+    (0..count)
+        .map(|i| {
+            let x = start + i as f32 * (cell + gap);
+            (x / ppp, (x + cell) / ppp)
+        })
+        .collect()
 }
 
 /// `Label ■■■■■■■····  value` row. A missing percentage draws no meter.
@@ -685,7 +762,10 @@ fn meter_row(
     let label_chars = label.chars().count().max(6) + 1;
     let bar = Rect::from_min_max(
         pos2(rect.left() + label_chars as f32 * cw, rect.top() + 4.0),
-        pos2(rect.right() - 11.0 * cw, rect.bottom() - 4.0),
+        pos2(
+            rect.right() - (METER_VALUE_CHARS + 1.0) * cw,
+            rect.bottom() - 4.0,
+        ),
     );
     if let Some(pct) = pct
         && bar.width() > 8.0
@@ -872,7 +952,7 @@ fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
                 look,
                 "Watts",
                 Some((watts / max * 100.0).clamp(0.0, 100.0) as i64),
-                &format!("{watts:.0}W/{max:.0}W"),
+                &format!("{watts:.0}/{max:.0} W"),
                 &look.cpu_upper,
             ),
             None => meter_row(
@@ -959,8 +1039,8 @@ fn cores(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
             );
             right -= 5.0 * cw;
             let graph = Rect::from_min_max(
-                pos2(left + 3.5 * cw, line.top() + 2.0),
-                pos2(right - cw, line.bottom() - 2.0),
+                pos2(left + 3.5 * cw, line.top() + 1.0),
+                pos2(right - cw, line.bottom() - 1.0),
             );
             if graph.width() > DOT {
                 dot_graph(
@@ -977,9 +1057,9 @@ fn cores(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
 
 fn mhz(value: u32) -> String {
     if value >= 1000 {
-        format!("{:.1}GHz", f64::from(value) / 1000.0)
+        format!("{:.2} GHz", f64::from(value) / 1000.0)
     } else {
-        format!("{value}MHz")
+        format!("{value} MHz")
     }
 }
 
@@ -1041,7 +1121,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
                 look,
                 "Watts",
                 Some((gpu.pwr_usage.saturating_mul(100) / max_mw).clamp(0, 100)),
-                &format!("{watts:.0}W/{:.0}W", max_mw as f64 / 1000.0),
+                &format!("{watts:.0}/{:.0} W", max_mw as f64 / 1000.0),
                 &look.gpu_power,
             );
         } else {
@@ -1050,7 +1130,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
                 look,
                 "Watts",
                 None,
-                &format!("{watts:.0}W"),
+                &format!("{watts:.0} W"),
                 &look.gpu_power,
             );
         }
@@ -1058,7 +1138,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
 
     if let Some(pct) = gpu.mem_used.saturating_mul(100).checked_div(gpu.mem_total) {
         let pct = pct.min(100) as i64;
-        let vram = format!("{}/{}", look.bytes(gpu.mem_used), look.bytes(gpu.mem_total));
+        let vram = look.pair(gpu.mem_used, gpu.mem_total);
         meter_row(ui, look, "VRAM", Some(pct), &vram, &look.gpu_vram);
     }
 
@@ -1133,11 +1213,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) {
         );
     }
     let commit = if s.commit_limit > 0 {
-        format!(
-            "{}/{}",
-            look.bytes(s.commit_used),
-            look.bytes(s.commit_limit)
-        )
+        look.pair(s.commit_used, s.commit_limit)
     } else {
         "N/A".to_owned()
     };
@@ -1154,7 +1230,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) {
             s.swap_used
         };
         let capacity = s.swap_total.max(ceiling);
-        let text = format!("{}/{}", look.bytes(value), look.bytes(capacity));
+        let text = look.pair(value, capacity);
         meter_row(ui, look, "Swap", pct_of(value, capacity), &text, &look.used);
     }
 
@@ -1186,7 +1262,7 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
     let cw = char_width(ui);
     for disk in disks {
         let label = format!("{} {}", disk.name, disk.fstype);
-        let usage = format!("{}/{}", look.bytes(disk.used), look.bytes(disk.total));
+        let usage = look.pair(disk.used, disk.total);
         let used = i64::from(disk.used_percent.clamp(0, 100));
         meter_row(ui, look, &label, Some(used), &usage, &look.available);
 
@@ -1208,7 +1284,7 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
             mono(),
             look.fg,
         );
-        let speed_w = 9.0 * cw;
+        let speed_w = 11.0 * cw;
         let left_end = line.right() - 7.0 * cw;
         let graph_w = ((left_end - line.left() - 2.0 * (cw + speed_w) - 2.0 * cw) / 2.0).max(0.0);
         let mut x = line.left();
@@ -1243,8 +1319,8 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
             );
             x += cw + speed_w + cw / 2.0;
             let graph = Rect::from_min_max(
-                pos2(x, line.top() + 2.0),
-                pos2(x + graph_w, line.bottom() - 2.0),
+                pos2(x, line.top() + 1.0),
+                pos2(x + graph_w, line.bottom() - 1.0),
             );
             if graph.width() > DOT {
                 dot_graph_scaled(&ui.painter_at(graph), graph, history, Grow::Up, grad, max);
@@ -1257,10 +1333,10 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
 
 fn link_speed(bps: u64) -> String {
     match bps {
-        1_000_000_000.. => format!("{} Gbps", bps / 1_000_000_000),
-        1_000_000.. => format!("{} Mbps", bps / 1_000_000),
-        1_000.. => format!("{} Kbps", bps / 1_000),
-        _ => format!("{bps} bps"),
+        1_000_000_000.. => format!("{} Gbit/s", bps / 1_000_000_000),
+        1_000_000.. => format!("{} Mbit/s", bps / 1_000_000),
+        1_000.. => format!("{} kbit/s", bps / 1_000),
+        _ => format!("{bps} bit/s"),
     }
 }
 
@@ -1407,8 +1483,8 @@ fn ping_row(ui: &mut Ui, look: &Look, status: &StatusbarInfo) {
         look.fg,
     );
     let graph = Rect::from_min_max(
-        pos2(line.left() + 5.0 * cw, line.top() + 2.0),
-        pos2(line.right() - 9.0 * cw, line.bottom() - 2.0),
+        pos2(line.left() + 5.0 * cw, line.top() + 1.0),
+        pos2(line.right() - 9.0 * cw, line.bottom() - 1.0),
     );
     let cols = graph_columns(graph.width());
     if cols == 0 {
@@ -1608,23 +1684,23 @@ fn ranking_panel(ui: &mut Ui, look: &Look, sample: &Sample, ranking: Ranking, so
     let mut columns = match ranking {
         Ranking::Cpu => vec![
             column("CPU%▼", 7.0),
-            column("RAM", 7.0),
-            column("Commit", 9.0),
+            column("RAM", 11.0),
+            column("Commit", 11.0),
         ],
         Ranking::Mem => vec![
             column("CPU%", 7.0),
-            column(arrow(sorts.mem_ram, "RAM▼", "RAM"), 7.0),
-            column(arrow(!sorts.mem_ram, "Commit▼", "Commit"), 9.0),
+            column(arrow(sorts.mem_ram, "RAM▼", "RAM"), 11.0),
+            column(arrow(!sorts.mem_ram, "Commit▼", "Commit"), 11.0),
         ],
-        Ranking::Gpu => vec![column("GPU%▼", 7.0), column("VRAM", 8.0)],
-        Ranking::Vram => vec![column("GPU%", 7.0), column("VRAM▼", 8.0)],
+        Ranking::Gpu => vec![column("GPU%▼", 7.0), column("VRAM", 11.0)],
+        Ranking::Vram => vec![column("GPU%", 7.0), column("VRAM▼", 11.0)],
         Ranking::Io => vec![
-            column(arrow(sorts.io == IoSort::Read, "Read/s▼", "Read/s"), 10.0),
+            column(arrow(sorts.io == IoSort::Read, "Read/s▼", "Read/s"), 12.0),
             column(
                 arrow(sorts.io == IoSort::Write, "Write/s▼", "Write/s"),
-                10.0,
+                12.0,
             ),
-            column(arrow(sorts.io == IoSort::Total, "Total▼", "Total"), 10.0),
+            column(arrow(sorts.io == IoSort::Total, "Total▼", "Total"), 12.0),
         ],
     };
     match ranking {
@@ -1834,10 +1910,44 @@ mod tests {
     }
 
     #[test]
+    fn meter_cells_are_pixel_aligned_and_evenly_spaced() {
+        for ppp in [1.0, 1.25, 1.5, 2.0] {
+            let cells = segment_cells(70.3, 371.7, ppp);
+            assert!(cells.len() > 10);
+            let px = |v: f32| v * ppp;
+            let widths: Vec<f32> = cells.iter().map(|(l, r)| px(r - l)).collect();
+            let gaps: Vec<f32> = cells.windows(2).map(|w| px(w[1].0 - w[0].1)).collect();
+            for v in widths.iter().chain(&gaps) {
+                assert!(
+                    (v - v.round()).abs() < 1e-3,
+                    "ppp={ppp}: {v} not whole pixels"
+                );
+            }
+            assert!(
+                widths.iter().all(|w| (w - widths[0]).abs() < 1e-3),
+                "ppp={ppp}"
+            );
+            assert!(gaps.iter().all(|g| (g - gaps[0]).abs() < 1e-3), "ppp={ppp}");
+            let end = cells.last().unwrap().1;
+            assert!(end <= 70.3 + 371.7 + 1.0 / ppp, "ppp={ppp}: overflows");
+        }
+    }
+
+    #[test]
+    fn sizes_and_rates_use_full_units() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let look = Look::new(&Config::new());
+        assert_eq!(look.bytes(16 * GIB), "16.0 GiB");
+        assert_eq!(look.rate(1536), "1.50 KiB/s");
+        assert_eq!(look.pair(28 * GIB, 37 * GIB), "28.0/37.0 GiB");
+        assert_eq!(look.pair(154 * 1024 * 1024, 5 * GIB), "154 MiB/5.00 GiB");
+    }
+
+    #[test]
     fn link_speeds_use_whole_units() {
-        assert_eq!(link_speed(325_000_000), "325 Mbps");
-        assert_eq!(link_speed(2_500_000_000), "2 Gbps");
-        assert_eq!(link_speed(999), "999 bps");
+        assert_eq!(link_speed(325_000_000), "325 Mbit/s");
+        assert_eq!(link_speed(2_500_000_000), "2 Gbit/s");
+        assert_eq!(link_speed(999), "999 bit/s");
     }
 
     #[test]

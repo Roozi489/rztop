@@ -15,10 +15,13 @@ pub fn note_error(error: &windows::core::Error) {
 }
 
 pub fn limited_without_admin() -> bool {
-    needs_admin_notice(
-        *ELEVATED.get_or_init(elevated),
-        ACCESS_DENIED.load(Ordering::Relaxed),
-    )
+    needs_admin_notice(is_elevated(), ACCESS_DENIED.load(Ordering::Relaxed))
+}
+
+/// Whether this process runs elevated; `None` if the token cannot be read.
+/// Cached, since elevation cannot change for a running process.
+pub fn is_elevated() -> Option<bool> {
+    *ELEVATED.get_or_init(elevated)
 }
 
 fn needs_admin_notice(elevated: Option<bool>, denied: bool) -> bool {
