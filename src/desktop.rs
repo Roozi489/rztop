@@ -78,6 +78,21 @@ impl Panel {
         Panel::VramProcs,
     ];
 
+    fn caption(self) -> &'static str {
+        match self {
+            Panel::Cpu => "CPU",
+            Panel::Gpu => "GPU",
+            Panel::Io => "I/O processes",
+            Panel::Mem => "Memory",
+            Panel::Disk => "Disks",
+            Panel::Net => "Network",
+            Panel::CpuProcs => "CPU processes",
+            Panel::MemProcs => "Memory processes",
+            Panel::GpuProcs => "GPU processes",
+            Panel::VramProcs => "VRAM processes",
+        }
+    }
+
     fn index(self) -> usize {
         Panel::ALL.iter().position(|p| *p == self).unwrap_or(0)
     }
@@ -721,6 +736,8 @@ impl eframe::App for Desktop {
 fn show_dock(ui: &mut Ui, dock: &mut DockState<Panel>, panels: &mut Panels) {
     let mut style = egui_dock::Style::from_egui(ui.style());
     style.tab_bar.height = 22.0;
+    // Tabs share the whole bar, so a lone caption leaves no empty strip.
+    style.tab_bar.fill_tab_bar = true;
     style.tab.tab_body.inner_margin = egui::Margin::same(8);
     style.overlay.overlay_type = egui_dock::OverlayType::HighlightedAreas;
     // A completed library drag can renumber the entire panel tree.
@@ -1959,27 +1976,26 @@ struct Panels<'a> {
 
 impl TabViewer for Panels<'_> {
     type Tab = Panel;
+    /// Blank, but as wide as the caption: egui_dock always centres tab text,
+    /// so `on_tab_button` paints the real caption left-aligned instead.
     fn title(&mut self, panel: &mut Panel) -> egui::WidgetText {
-        text(
-            match panel {
-                Panel::Cpu => "┤ CPU ├",
-                Panel::Gpu => "┤ GPU ├",
-                Panel::Io => "┤ I/O processes ├",
-                Panel::Mem => "┤ Memory ├",
-                Panel::Disk => "┤ Disks ├",
-                Panel::Net => "┤ Network ├",
-                Panel::CpuProcs => "┤ CPU processes ├",
-                Panel::MemProcs => "┤ Memory processes ├",
-                Panel::GpuProcs => "┤ GPU processes ├",
-                Panel::VramProcs => "┤ VRAM processes ├",
-            },
-            self.look.fg,
-        )
-        .strong()
-        .into()
+        text(" ".repeat(panel.caption().chars().count()), self.look.fg)
+            .strong()
+            .into()
     }
     fn on_tab_button(&mut self, tab: &mut Panel, response: &egui::Response) {
         self.captions.push((*tab, response.rect));
+        let painter = response
+            .ctx
+            .layer_painter(response.layer_id)
+            .with_clip_rect(response.rect);
+        painter.text(
+            response.rect.left_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            tab.caption(),
+            FontId::monospace(FONT_SIZE),
+            self.look.fg,
+        );
     }
     fn closeable(&mut self, _: &mut Panel) -> bool {
         false
