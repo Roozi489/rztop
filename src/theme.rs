@@ -174,6 +174,23 @@ impl Theme {
     }
 }
 
+/// Parse a bundled theme's palette by name, falling back to the default
+/// theme when the name is unknown or its palette does not parse.
+#[cfg(feature = "desktop")]
+pub fn palette(name: &str) -> ThemePalette {
+    BUNDLED_THEMES
+        .iter()
+        .find(|t| t.name.eq_ignore_ascii_case(name))
+        .and_then(|t| toml::from_str(t.content).ok())
+        .unwrap_or_else(|| {
+            let default = BUNDLED_THEMES
+                .first()
+                .expect("BUNDLED_THEMES is non-empty by construction")
+                .content;
+            toml::from_str(default).expect("default theme must parse")
+        })
+}
+
 impl Default for Theme {
     fn default() -> Self {
         Self::new()

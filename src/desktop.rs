@@ -1,12 +1,18 @@
 use crate::{
     collect::{Collector, cpu::CpuCollector, gpu::GpuCollector, process::ProcCollector},
-    domain::{cpu::CpuInfo, gpu::GpuInfo, process::IoRates},
+    config::Config,
+    domain::{config_enums::TempScale, cpu::CpuInfo, gpu::GpuInfo, process::IoRates},
     runner::LatestSlot,
+    themes::{GradientDef, Rgb},
 };
-use eframe::egui::{self, Color32, RichText, Ui};
+use eframe::egui::{
+    self, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, RichText, Sense, Ui, pos2,
+    vec2,
+};
 use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     sync::{Arc, mpsc},
     thread::JoinHandle,
     time::Duration,
@@ -14,10 +20,13 @@ use std::{
 
 const TICK: Duration = Duration::from_secs(1);
 const LAYOUT: &str = "dock-layout-v1";
-const GREEN: Color32 = Color32::from_rgb(170, 206, 113);
-const BLUE: Color32 = Color32::from_rgb(139, 178, 225);
-const GOLD: Color32 = Color32::from_rgb(229, 186, 109);
-const FG: Color32 = Color32::from_rgb(224, 219, 199);
+/// Height of one text, meter or core row.
+const ROW: f32 = 18.0;
+/// Spacing between graph dots, horizontally and vertically.
+const DOT: f32 = 4.0;
+const FONT_SIZE: f32 = 13.0;
+/// Absolute full-colour I/O rate, matching the terminal rankings.
+const IO_FULL_SCALE: u64 = 5_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Panel {
@@ -32,6 +41,90 @@ fn initial_layout() -> DockState<Panel> {
     let [_, lower] = tree.split_below(NodeIndex::root(), 0.47, vec![Panel::Gpu]);
     tree.split_right(lower, 0.45, vec![Panel::Io]);
     dock
+}
+
+fn rgb(c: Rgb) -> Color32 {
+    Color32::from_rgb(c.0, c.1, c.2)
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let f = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
+}
+
+/// 101-step theme gradient: start → mid over 0–50 %, mid → end over 50–100 %.
+struct Gradient([Color32; 101]);
+
+impl Gradient {
+    fn new(def: &GradientDef) -> Self {
+        let (start, mid, end) = (rgb(def.start), rgb(def.mid), rgb(def.end));
+        Self(std::array::from_fn(|i| {
+            if i <= 50 {
+                mix(start, mid, i as f32 / 50.0)
+            } else {
+                mix(mid, end, (i - 50) as f32 / 50.0)
+            }
+        }))
+    }
+
+    fn at(&self, pct: i64) -> Color32 {
+        self.0[pct.clamp(0, 100) as usize]
+    }
+}
+
+/// Colours and meter scales taken from the user's rztop configuration.
+struct Look {
+    bg: Color32,
+    fg: Color32,
+    label: Color32,
+    dim: Color32,
+    meter_off: Color32,
+    selected: Color32,
+    cpu_upper: Gradient,
+    cpu_lower: Gradient,
+    temp: Gradient,
+    gpu: Gradient,
+    gpu_clock: Gradient,
+    gpu_power: Gradient,
+    gpu_vram: Gradient,
+    process: Gradient,
+    cpu_clock_max_mhz: i64,
+    gpu_clock_max_mhz: i64,
+    gpu_power_max_watts: i64,
+    temp_scale: TempScale,
+}
+
+impl Look {
+    fn new(config: &Config) -> Self {
+        let palette = crate::theme::palette(&config.ui.color_theme);
+        let (c, g) = (&palette.colors, &palette.gradients);
+        let bg = rgb(c.main_bg);
+        Self {
+            bg,
+            fg: rgb(c.main_fg),
+            label: rgb(c.data_label_fg),
+            dim: rgb(c.graph_text),
+            meter_off: mix(bg, rgb(c.meter_bg), 0.6),
+            selected: rgb(c.selected_bg),
+            cpu_upper: Gradient::new(&g.cpu_upper),
+            cpu_lower: Gradient::new(&g.cpu_lower),
+            temp: Gradient::new(&g.temp),
+            gpu: Gradient::new(&g.gpu),
+            gpu_clock: Gradient::new(&g.gpu_clock),
+            gpu_power: Gradient::new(&g.gpu_power),
+            gpu_vram: Gradient::new(&g.gpu_vram),
+            process: Gradient::new(&g.process),
+            cpu_clock_max_mhz: config.cpu.cpu_clock_max_mhz,
+            gpu_clock_max_mhz: config.gpu.gpu_clock_max_mhz,
+            gpu_power_max_watts: config.gpu.gpu_power_max_watts,
+            temp_scale: config.cpu.temp_scale,
+        }
+    }
+
+    fn temp(&self, celsius: i64) -> String {
+        let (value, unit) = crate::tools::celsius_to(celsius, self.temp_scale);
+        format!("{value}{unit}")
+    }
 }
 
 struct Sample {
@@ -98,14 +191,15 @@ struct Desktop {
     monitor: Monitor,
     dock: DockState<Panel>,
     gpu: usize,
+    look: Look,
 }
 
 impl eframe::App for Desktop {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(text("rztop", GREEN));
-                ui.label(text("Drag a caption to dock", FG));
+                ui.label(text("rztop", self.look.cpu_upper.at(0)));
+                ui.label(text("Drag a caption to dock", self.look.label));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Reset layout").clicked() {
                         self.dock = initial_layout();
@@ -120,6 +214,7 @@ impl eframe::App for Desktop {
                     captions: Vec::new(),
                     sample: self.monitor.latest.latest(),
                     gpu: &mut self.gpu,
+                    look: &self.look,
                 };
                 show_dock(ui, &mut self.dock, &mut panels);
             });
@@ -222,13 +317,513 @@ fn finish_quick_drop(ui: &Ui, dock: &mut DockState<Panel>, captions: &[(Panel, e
 }
 
 fn text(value: impl Into<String>, color: Color32) -> RichText {
-    RichText::new(value).monospace().size(14.0).color(color)
+    RichText::new(value)
+        .monospace()
+        .size(FONT_SIZE)
+        .color(color)
+}
+
+fn mono() -> FontId {
+    FontId::monospace(FONT_SIZE)
+}
+
+fn char_width(ui: &Ui) -> f32 {
+    ui.fonts(|fonts| fonts.glyph_width(&mono(), '0'))
+}
+
+/// Reserve one full-width row and return its rectangle.
+fn row(ui: &mut Ui) -> Rect {
+    let width = ui.available_width();
+    ui.allocate_exact_size(vec2(width, ROW), Sense::hover()).0
+}
+
+/// Number of lit meter cells, rounded to the nearest cell.
+fn filled_cells(pct: i64, cells: usize) -> usize {
+    (pct.clamp(0, 100) as usize * cells + 50) / 100
+}
+
+/// Segmented meter. Lit cells take the gradient colour of their position,
+/// so a full bar runs from the gradient start to its end.
+fn segments(painter: &Painter, rect: Rect, pct: i64, grad: &Gradient, off: Color32) {
+    const PITCH: f32 = 7.0;
+    const GAP: f32 = 1.5;
+    let cells = ((rect.width() + GAP) / PITCH).floor().max(1.0) as usize;
+    let width = (rect.width() - GAP * (cells - 1) as f32) / cells as f32;
+    let lit = filled_cells(pct, cells);
+    let last = cells.saturating_sub(1).max(1);
+    for i in 0..cells {
+        let color = if i < lit {
+            grad.at((i * 100 / last) as i64)
+        } else {
+            off
+        };
+        let x = rect.left() + i as f32 * (width + GAP);
+        painter.rect_filled(
+            Rect::from_min_size(pos2(x, rect.top()), vec2(width, rect.height())),
+            CornerRadius::same(1),
+            color,
+        );
+    }
+}
+
+/// `Label ■■■■■■■····  value` row. A missing percentage draws no meter.
+fn meter_row(
+    ui: &mut Ui,
+    look: &Look,
+    label: &str,
+    pct: Option<i64>,
+    value: &str,
+    grad: &Gradient,
+) {
+    let rect = row(ui);
+    let cw = char_width(ui);
+    let painter = ui.painter();
+    painter.text(
+        rect.left_center(),
+        Align2::LEFT_CENTER,
+        label,
+        mono(),
+        look.fg,
+    );
+    let value_color = pct.map_or(look.label, |pct| grad.at(pct));
+    painter.text(
+        rect.right_center(),
+        Align2::RIGHT_CENTER,
+        value,
+        mono(),
+        value_color,
+    );
+    let bar = Rect::from_min_max(
+        pos2(rect.left() + 7.0 * cw, rect.top() + 4.0),
+        pos2(rect.right() - 11.0 * cw, rect.bottom() - 4.0),
+    );
+    if let Some(pct) = pct
+        && bar.width() > 8.0
+    {
+        segments(painter, bar, pct, grad, look.meter_off);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Grow {
+    Up,
+    Down,
+}
+
+/// Braille-style dot graph with the newest sample at the right edge. Each
+/// column is one sample; each dot takes the gradient colour of its height.
+/// Columns without history show the zero baseline.
+fn dot_graph(painter: &Painter, rect: Rect, series: &VecDeque<i64>, grow: Grow, grad: &Gradient) {
+    let cols = (rect.width() / DOT).floor() as usize;
+    let rows = ((rect.height() / DOT).floor() as usize).max(1);
+    if cols == 0 {
+        return;
+    }
+    let skip = series.len().saturating_sub(cols);
+    let pad = cols - (series.len() - skip);
+    let values = std::iter::repeat_n(0, pad).chain(series.iter().skip(skip).copied());
+    for (col, value) in values.enumerate() {
+        let x = rect.right() - (cols - col) as f32 * DOT + DOT / 2.0;
+        let height = (value.clamp(0, 100) as f32 / 100.0 * rows as f32).round() as usize;
+        for r in 0..height.clamp(1, rows) {
+            let offset = (r as f32 + 0.5) * DOT;
+            let y = match grow {
+                Grow::Up => rect.bottom() - offset,
+                Grow::Down => rect.top() + offset,
+            };
+            let color = grad.at(((r + 1) * 100 / rows) as i64);
+            painter.circle_filled(pos2(x, y), 1.1, color);
+        }
+    }
+}
+
+/// Text drawn over a graph, with a background patch so dots never cross it.
+fn caption(
+    painter: &Painter,
+    look: &Look,
+    pos: Pos2,
+    align: Align2,
+    value: String,
+    color: Color32,
+) {
+    let galley = painter.layout_no_wrap(value, mono(), color);
+    let rect = align.anchor_size(pos, galley.size());
+    painter.rect_filled(rect.expand(2.0), CornerRadius::same(2), look.bg);
+    painter.galley(rect.min, galley, color);
+}
+
+fn last(series: &VecDeque<i64>) -> i64 {
+    series.back().copied().unwrap_or(0)
+}
+
+fn cpu_panel(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
+    let full = ui.available_rect_before_wrap();
+    if full.width() >= 620.0 {
+        let split = (full.width() * 0.42).round();
+        cpu_graph(
+            ui,
+            look,
+            cpu,
+            Rect::from_min_size(full.min, vec2(split, full.height())),
+        );
+        let stats_rect = Rect::from_min_max(pos2(full.left() + split + 14.0, full.top()), full.max);
+        let mut stats = ui.new_child(egui::UiBuilder::new().max_rect(stats_rect));
+        cpu_stats(&mut stats, look, cpu);
+        ui.allocate_rect(full, Sense::hover());
+    } else {
+        let height = (full.height() * 0.35).clamp(56.0, 180.0);
+        let (graph, _) = ui.allocate_exact_size(vec2(full.width(), height), Sense::hover());
+        cpu_graph(ui, look, cpu, graph);
+        ui.add_space(6.0);
+        cpu_stats(ui, look, cpu);
+    }
+}
+
+/// User time grows up from the centre line, system time grows down.
+fn cpu_graph(ui: &Ui, look: &Look, cpu: &CpuInfo, rect: Rect) {
+    let painter = ui.painter_at(rect);
+    let mid = rect.center().y;
+    let (user, system) = (&cpu.cpu_percent.user, &cpu.cpu_percent.system);
+    let upper = Rect::from_min_max(rect.min, pos2(rect.right(), mid - 1.0));
+    let lower = Rect::from_min_max(pos2(rect.left(), mid + 1.0), rect.max);
+    dot_graph(&painter, upper, user, Grow::Up, &look.cpu_upper);
+    dot_graph(&painter, lower, system, Grow::Down, &look.cpu_lower);
+    caption(
+        &painter,
+        look,
+        rect.right_top() + vec2(-2.0, 2.0),
+        Align2::RIGHT_TOP,
+        format!("user {}%", last(user)),
+        look.cpu_upper.at(last(user)),
+    );
+    caption(
+        &painter,
+        look,
+        rect.right_bottom() + vec2(-2.0, -2.0),
+        Align2::RIGHT_BOTTOM,
+        format!("system {}%", last(system)),
+        look.cpu_lower.at(last(system)),
+    );
+}
+
+fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
+    let title = row(ui);
+    ui.painter().text(
+        title.right_center(),
+        Align2::RIGHT_CENTER,
+        &cpu.cpu_name,
+        mono(),
+        look.fg,
+    );
+
+    let total = cpu.cpu_percent.total.back().copied();
+    let total_text = total.map_or_else(|| "N/A".to_owned(), |v| format!("{v}%"));
+    meter_row(ui, look, "CPU", total, &total_text, &look.cpu_upper);
+
+    let scale = if look.cpu_clock_max_mhz > 0 {
+        look.cpu_clock_max_mhz as u64
+    } else {
+        u64::from(cpu.peak_clock_mhz)
+    };
+    let clock = (cpu.clock_mhz > 0).then(|| {
+        (u64::from(cpu.clock_mhz) * 100)
+            .checked_div(scale)
+            .unwrap_or(0)
+            .min(100) as i64
+    });
+    let clock_text = if clock.is_some() { &cpu.cpu_hz } else { "N/A" };
+    meter_row(ui, look, "Clock", clock, clock_text, &look.cpu_upper);
+
+    if let Some(t) = cpu
+        .temp
+        .first()
+        .and_then(|t| t.back())
+        .copied()
+        .filter(|t| *t > 0)
+    {
+        meter_row(ui, look, "Temp", Some(t), &look.temp(t), &look.temp);
+    }
+    if let Some(watts) = cpu.cpu_watts {
+        match cpu.cpu_max_watts.filter(|max| *max > 0.0) {
+            Some(max) => meter_row(
+                ui,
+                look,
+                "Watts",
+                Some((watts / max * 100.0).clamp(0.0, 100.0) as i64),
+                &format!("{watts:.0}W/{max:.0}W"),
+                &look.cpu_upper,
+            ),
+            None => meter_row(
+                ui,
+                look,
+                "Watts",
+                None,
+                &format!("{watts:.1} W"),
+                &look.cpu_upper,
+            ),
+        }
+    }
+
+    ui.add_space(4.0);
+    let header = row(ui);
+    ui.painter().text(
+        header.left_center(),
+        Align2::LEFT_CENTER,
+        "Cores",
+        mono(),
+        look.label,
+    );
+    cores(ui, look, cpu);
+}
+
+/// Per-core rows: index, mini history graph, usage and (when known) temperature.
+/// Cores fill columns top to bottom, matching the terminal layout.
+fn cores(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
+    let count = cpu.core_percent.len();
+    if count == 0 {
+        return;
+    }
+    let cw = char_width(ui);
+    let width = ui.available_width();
+    let cols = ((width / (30.0 * cw)) as usize).clamp(1, 4).min(count);
+    let per_col = count.div_ceil(cols);
+    let temp_of = |i: usize| {
+        cpu.temp
+            .get(i + 1)
+            .and_then(|t| t.back())
+            .copied()
+            .filter(|t| *t > 0)
+    };
+    let show_temp = (0..count).any(|i| temp_of(i).is_some());
+    let gap = 2.0 * cw;
+    let cell_w = (width - gap * (cols - 1) as f32) / cols as f32;
+    for r in 0..per_col {
+        let line = row(ui);
+        let painter = ui.painter();
+        let cy = line.center().y;
+        for c in 0..cols {
+            let i = c * per_col + r;
+            let Some(history) = cpu.core_percent.get(i) else {
+                continue;
+            };
+            let left = line.left() + c as f32 * (cell_w + gap);
+            let mut right = left + cell_w;
+            painter.text(
+                pos2(left, cy),
+                Align2::LEFT_CENTER,
+                format!("{i:02}"),
+                mono(),
+                look.fg,
+            );
+            if show_temp {
+                if let Some(t) = temp_of(i) {
+                    painter.text(
+                        pos2(right, cy),
+                        Align2::RIGHT_CENTER,
+                        look.temp(t),
+                        mono(),
+                        look.temp.at(t),
+                    );
+                }
+                right -= 6.0 * cw;
+            }
+            let pct = last(history).clamp(0, 100);
+            painter.text(
+                pos2(right, cy),
+                Align2::RIGHT_CENTER,
+                format!("{pct}%"),
+                mono(),
+                look.cpu_upper.at(pct),
+            );
+            right -= 5.0 * cw;
+            let graph = Rect::from_min_max(
+                pos2(left + 3.5 * cw, line.top() + 2.0),
+                pos2(right - cw, line.bottom() - 2.0),
+            );
+            if graph.width() > DOT {
+                dot_graph(
+                    &ui.painter_at(graph),
+                    graph,
+                    history,
+                    Grow::Up,
+                    &look.cpu_upper,
+                );
+            }
+        }
+    }
+}
+
+fn mhz(value: u32) -> String {
+    if value >= 1000 {
+        format!("{:.1}GHz", f64::from(value) / 1000.0)
+    } else {
+        format!("{value}MHz")
+    }
+}
+
+fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
+    if gpus.is_empty() {
+        ui.label(text("No GPU readings available", look.label));
+        return;
+    }
+    *selected %= gpus.len();
+    let gpu = &gpus[*selected];
+    let count = gpus.len();
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if count > 1 && ui.small_button("▶").clicked() {
+                *selected = (*selected + 1) % count;
+            }
+            ui.label(text(&gpu.name, look.fg));
+            if count > 1 && ui.small_button("◀").clicked() {
+                *selected = (*selected + count - 1) % count;
+            }
+        });
+    });
+
+    let util = gpu.gpu_percent.utilization.back().copied();
+    let util_text = util.map_or_else(|| "N/A".to_owned(), |v| format!("{v}%"));
+    meter_row(ui, look, "GPU", util, &util_text, &look.gpu);
+
+    let max_clock = if look.gpu_clock_max_mhz > 0 {
+        look.gpu_clock_max_mhz as u64
+    } else {
+        u64::from(gpu.gpu_max_clock_speed)
+    };
+    let clock = (u64::from(gpu.gpu_clock_speed) * 100)
+        .checked_div(max_clock)
+        .map(|pct| pct.min(100) as i64);
+    meter_row(
+        ui,
+        look,
+        "Clock",
+        clock,
+        &mhz(gpu.gpu_clock_speed),
+        &look.gpu_clock,
+    );
+
+    if let Some(t) = gpu.temp.back().copied().filter(|t| *t > 0) {
+        meter_row(ui, look, "Temp", Some(t), &look.temp(t), &look.temp);
+    }
+
+    let max_mw = if look.gpu_power_max_watts > 0 {
+        look.gpu_power_max_watts.saturating_mul(1000)
+    } else {
+        gpu.pwr_max_usage
+    };
+    if gpu.pwr_usage > 0 {
+        let watts = gpu.pwr_usage as f64 / 1000.0;
+        if max_mw > 0 {
+            meter_row(
+                ui,
+                look,
+                "Watts",
+                Some((gpu.pwr_usage.saturating_mul(100) / max_mw).clamp(0, 100)),
+                &format!("{watts:.0}W/{:.0}W", max_mw as f64 / 1000.0),
+                &look.gpu_power,
+            );
+        } else {
+            meter_row(
+                ui,
+                look,
+                "Watts",
+                None,
+                &format!("{watts:.0}W"),
+                &look.gpu_power,
+            );
+        }
+    }
+
+    if let Some(pct) = gpu.mem_used.saturating_mul(100).checked_div(gpu.mem_total) {
+        let pct = pct.min(100) as i64;
+        let vram = format!("{}/{}", bytes(gpu.mem_used), bytes(gpu.mem_total));
+        meter_row(ui, look, "VRAM", Some(pct), &vram, &look.gpu_vram);
+    }
+
+    // Utilisation history fills whatever height remains.
+    ui.add_space(6.0);
+    let rest = ui.available_rect_before_wrap();
+    if rest.height() >= ROW + 3.0 * DOT && rest.width() > 4.0 * DOT {
+        let (rect, _) = ui.allocate_exact_size(rest.size(), Sense::hover());
+        let painter = ui.painter_at(rect);
+        dot_graph(
+            &painter,
+            rect,
+            &gpu.gpu_percent.utilization,
+            Grow::Up,
+            &look.gpu,
+        );
+        let now = util.unwrap_or(0);
+        caption(
+            &painter,
+            look,
+            rect.right_top() + vec2(-2.0, 2.0),
+            Align2::RIGHT_TOP,
+            format!("util {now}%"),
+            look.gpu.at(now),
+        );
+    }
+}
+
+fn io_panel(ui: &mut Ui, look: &Look, io: &[(String, Option<IoRates>)]) {
+    let cw = char_width(ui);
+    let column = 10.0 * cw;
+    let header = row(ui);
+    let painter = ui.painter();
+    let cy = header.center().y;
+    painter.text(
+        header.left_center(),
+        Align2::LEFT_CENTER,
+        "Program",
+        mono(),
+        look.fg,
+    );
+    for (k, name) in ["Total▼", "Write/s", "Read/s"].into_iter().enumerate() {
+        let x = header.right() - k as f32 * column;
+        painter.text(pos2(x, cy), Align2::RIGHT_CENTER, name, mono(), look.fg);
+    }
+    egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .show_rows(ui, ROW, io.len(), |ui, rows| {
+            for (name, rates) in &io[rows] {
+                let line = row(ui);
+                let painter = ui.painter();
+                let cy = line.center().y;
+                let name_chars = ((line.width() - 3.0 * column - cw) / cw).max(1.0) as usize;
+                let name = crate::tools::ljust(name, name_chars, true);
+                painter.text(
+                    line.left_center(),
+                    Align2::LEFT_CENTER,
+                    name,
+                    mono(),
+                    look.fg,
+                );
+                let values = [
+                    rates.map(|r| r.total()),
+                    rates.map(|r| r.write),
+                    rates.map(|r| r.read),
+                ];
+                for (k, value) in values.into_iter().enumerate() {
+                    let (label, color) = match value {
+                        Some(v) => (
+                            crate::tools::floating_humanizer(v, true, 0, false, true, false),
+                            look.process
+                                .at((v.saturating_mul(100) / IO_FULL_SCALE).min(100) as i64),
+                        ),
+                        None => ("N/A".to_owned(), look.label),
+                    };
+                    let x = line.right() - k as f32 * column;
+                    painter.text(pos2(x, cy), Align2::RIGHT_CENTER, label, mono(), color);
+                }
+            }
+        });
 }
 
 struct Panels<'a> {
     captions: Vec<(Panel, egui::Rect)>,
     sample: Option<Arc<Sample>>,
     gpu: &'a mut usize,
+    look: &'a Look,
 }
 
 impl TabViewer for Panels<'_> {
@@ -240,7 +835,7 @@ impl TabViewer for Panels<'_> {
                 Panel::Gpu => "┤ GPU ├",
                 Panel::Io => "┤ I/O processes ├",
             },
-            FG,
+            self.look.fg,
         )
         .strong()
         .into()
@@ -251,118 +846,19 @@ impl TabViewer for Panels<'_> {
     fn closeable(&mut self, _: &mut Panel) -> bool {
         false
     }
-    fn scroll_bars(&self, panel: &Panel) -> [bool; 2] {
-        [false, *panel != Panel::Io]
+    fn scroll_bars(&self, _: &Panel) -> [bool; 2] {
+        // Panels size their graphs to the visible area; I/O scrolls its own rows.
+        [false, false]
     }
     fn ui(&mut self, ui: &mut Ui, panel: &mut Panel) {
-        let Some(s) = &self.sample else {
-            ui.label(text("Sampling…", BLUE));
+        let Some(sample) = self.sample.clone() else {
+            ui.label(text("Sampling…", self.look.label));
             return;
         };
         match panel {
-            Panel::Cpu => {
-                ui.label(text(&s.cpu.cpu_name, FG).strong());
-                meter(ui, "CPU", s.cpu.cpu_percent.total.back().copied());
-                let n = (ui.available_width() / 8.5).clamp(1.0, 160.0) as usize;
-                let history: String = s
-                    .cpu
-                    .cpu_percent
-                    .total
-                    .iter()
-                    .skip(s.cpu.cpu_percent.total.len().saturating_sub(n))
-                    .map(|v| {
-                        ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
-                            [(v.clamp(&0, &100) * 7 / 100) as usize]
-                    })
-                    .collect();
-                ui.label(text(history, BLUE));
-                ui.label(text(
-                    format!("Clock  {}    Cores  {}", s.cpu.cpu_hz, s.cpu.core_count),
-                    GOLD,
-                ));
-                let cols = ((ui.available_width() / 166.0) as usize).clamp(1, 4);
-                egui::Grid::new("cores")
-                    .num_columns(cols)
-                    .spacing([16.0, 2.0])
-                    .show(ui, |ui| {
-                        for (i, core) in s.cpu.core_percent.iter().enumerate() {
-                            let pct = core.back().copied().unwrap_or(0).clamp(0, 100);
-                            ui.label(text(
-                                format!(
-                                    "{i:02} {:·<7} {pct:3}%",
-                                    "▪".repeat((pct * 7 / 100) as usize)
-                                ),
-                                GREEN,
-                            ));
-                            if (i + 1) % cols == 0 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-            }
-            Panel::Gpu => {
-                if s.gpus.is_empty() {
-                    ui.label(text("No GPU readings available", BLUE));
-                    return;
-                }
-                *self.gpu %= s.gpus.len();
-                if s.gpus.len() > 1 {
-                    ui.horizontal(|ui| {
-                        if ui.small_button("◀").clicked() {
-                            *self.gpu = (*self.gpu + s.gpus.len() - 1) % s.gpus.len();
-                        }
-                        if ui.small_button("▶").clicked() {
-                            *self.gpu = (*self.gpu + 1) % s.gpus.len();
-                        }
-                    });
-                }
-                let g = &s.gpus[*self.gpu];
-                ui.label(text(&g.name, FG).strong());
-                meter(ui, "GPU", g.gpu_percent.utilization.back().copied());
-                ui.label(text(format!("Clock  {} MHz", g.gpu_clock_speed), BLUE));
-                if let Some(t) = g.temp.back().filter(|t| **t > 0) {
-                    ui.label(text(format!("Temp   {t} °C"), GOLD));
-                }
-                if g.pwr_usage > 0 {
-                    ui.label(text(
-                        format!("Watts  {:.0} W", g.pwr_usage as f64 / 1000.0),
-                        GOLD,
-                    ));
-                }
-                if g.mem_total > 0 {
-                    ui.label(text(
-                        format!("VRAM   {} / {}", bytes(g.mem_used), bytes(g.mem_total)),
-                        BLUE,
-                    ));
-                }
-            }
-            Panel::Io => {
-                let width = ((ui.available_width() / 8.5) as usize)
-                    .saturating_sub(24)
-                    .clamp(1, 40);
-                ui.label(text(
-                    format!(
-                        "{:<width$}{:>8}{:>8}{:>8}",
-                        "Program", "Read/s", "Write/s", "Total▼"
-                    ),
-                    GOLD,
-                ));
-                egui::ScrollArea::vertical().show_rows(ui, 16.0, s.io.len(), |ui, rows| {
-                    for (name, rates) in &s.io[rows] {
-                        let name = crate::tools::ljust(name, width, true);
-                        let fmt = |v: Option<u64>| v.map(bytes).unwrap_or_else(|| "N/A".into());
-                        ui.label(text(
-                            format!(
-                                "{name}{:>8}{:>8}{:>8}",
-                                fmt(rates.map(|r| r.read)),
-                                fmt(rates.map(|r| r.write)),
-                                fmt(rates.map(|r| r.total()))
-                            ),
-                            GREEN,
-                        ));
-                    }
-                });
-            }
+            Panel::Cpu => cpu_panel(ui, self.look, &sample.cpu),
+            Panel::Gpu => gpu_panel(ui, self.look, &sample.gpus, self.gpu),
+            Panel::Io => io_panel(ui, self.look, &sample.io),
         }
     }
 }
@@ -371,40 +867,36 @@ fn bytes(value: u64) -> String {
     crate::tools::floating_humanizer(value, true, 0, false, false, false)
 }
 
-fn meter(ui: &mut Ui, name: &str, value: Option<i64>) {
-    let Some(value) = value else {
-        ui.label(text(format!("{name}  N/A"), BLUE));
-        return;
-    };
-    let cells = ((ui.available_width() / 8.5) as usize)
-        .saturating_sub(12)
-        .clamp(1, 72);
-    let filled = value.clamp(0, 100) as usize * cells / 100;
-    ui.label(text(
-        format!(
-            "{name:<6}{}{} {value:3}%",
-            "▪".repeat(filled),
-            "·".repeat(cells - filled)
-        ),
-        GREEN,
-    ));
+fn load_config() -> Config {
+    let mut config = Config::new();
+    let path = crate::tools::config_dir().join("rztop.toml");
+    if path.exists() {
+        // Read-only: warnings are reported by the terminal frontend, which owns the file.
+        let _ = config.load(&path);
+    }
+    config
 }
 
 pub fn run_desktop() -> eframe::Result {
+    let look = Look::new(&load_config());
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([740.0, 620.0])
+            .with_inner_size([1150.0, 900.0])
             .with_min_inner_size([410.0, 320.0]),
         ..Default::default()
     };
     eframe::run_native(
         "rztop desktop",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             cc.egui_ctx.style_mut(|s| {
-                s.visuals.panel_fill = Color32::from_rgb(22, 22, 30);
-                s.visuals.extreme_bg_color = Color32::from_rgb(18, 18, 25);
-                s.visuals.selection.bg_fill = Color32::from_rgb(60, 78, 99);
+                s.visuals.panel_fill = look.bg;
+                s.visuals.window_fill = look.bg;
+                s.visuals.extreme_bg_color = mix(look.bg, Color32::BLACK, 0.3);
+                s.visuals.faint_bg_color = mix(look.bg, look.fg, 0.04);
+                s.visuals.selection.bg_fill = look.selected;
+                s.visuals.widgets.noninteractive.bg_stroke.color = look.dim;
+                s.visuals.override_text_color = Some(look.fg);
                 s.spacing.item_spacing = egui::vec2(4.0, 2.0);
             });
             let dock = cc
@@ -415,6 +907,7 @@ pub fn run_desktop() -> eframe::Result {
                 dock,
                 monitor: Monitor::new(cc.egui_ctx.clone()),
                 gpu: 0,
+                look,
             }))
         }),
     )
@@ -426,8 +919,32 @@ mod tests {
     use egui::{Event, PointerButton, Pos2, Rect};
 
     #[test]
+    fn gradient_spans_theme_stops() {
+        let def = GradientDef {
+            start: Rgb(0, 0, 0),
+            mid: Rgb(100, 100, 100),
+            end: Rgb(200, 0, 0),
+        };
+        let grad = Gradient::new(&def);
+        assert_eq!(grad.at(-5), Color32::from_rgb(0, 0, 0));
+        assert_eq!(grad.at(50), Color32::from_rgb(100, 100, 100));
+        assert_eq!(grad.at(250), Color32::from_rgb(200, 0, 0));
+    }
+
+    #[test]
+    fn meter_cells_round_to_nearest() {
+        assert_eq!(filled_cells(0, 40), 0);
+        assert_eq!(filled_cells(1, 40), 0);
+        assert_eq!(filled_cells(2, 40), 1);
+        assert_eq!(filled_cells(50, 40), 20);
+        assert_eq!(filled_cells(100, 40), 40);
+        assert_eq!(filled_cells(150, 40), 40);
+    }
+
+    #[test]
     fn dragging_io_caption_to_cpu_right_edge_creates_a_new_split() {
         let ctx = egui::Context::default();
+        let look = Look::new(&Config::new());
         let mut dock = initial_layout();
         let mut time = 0.0;
         let mut frame = |dock: &mut DockState<Panel>, events| {
@@ -447,6 +964,7 @@ mod tests {
                             captions: Vec::new(),
                             sample: None,
                             gpu: &mut 0,
+                            look: &look,
                         },
                     );
                 });
