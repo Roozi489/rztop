@@ -8,6 +8,8 @@
 [![Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-GPL--2.0--or--later-green)](LICENSE)
 
+![rztop screenshot](docs/screenshot.png)
+
 </div>
 
 rztop is a fork of [rtop by Freddie Haddad](https://github.com/freddiehaddad/rtop),
@@ -87,7 +89,7 @@ rztop reads an optional config file and never writes it:
 |------|-------|
 | Config | `%APPDATA%\rztop\rztop.toml` (or `$XDG_CONFIG_HOME\rztop\`) |
 | Log | `%LOCALAPPDATA%\rztop\rztop.log` (or `$XDG_STATE_HOME\rztop\`) |
-| Window and layout | `%APPDATA%\rztop desktop\data\app.ron` |
+| Window and layout | `%APPDATA%\rztop\data\app.ron` |
 
 An rtop `rtop.toml` can be copied over; keys the desktop app does not use are
 ignored. The keys it reads:

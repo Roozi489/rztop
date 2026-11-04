@@ -2364,7 +2364,7 @@ pub fn run_desktop() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "rztop desktop",
+        "rztop",
         options,
         Box::new(move |cc| {
             cc.egui_ctx.style_mut(|s| {
