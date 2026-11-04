@@ -424,3 +424,9 @@ The statusbar shows rztop's own CPU percentage as `rztop CPU x.x%` before uptime
 ### Permission status
 
 The statusbar shows `not admin: limited data` when Windows confirms rztop is not elevated and a process, pagefile, or PawnIO device query has reported access denied. The notice remains for the session because hardware discovery can fail only once at startup. Missing drivers, unsupported sensors and unknown elevation state alone do not trigger it. Running as administrator may allow more readings, but does not guarantee access to protected processes. rztop never elevates itself automatically. The notice takes priority over optional right-side status items when space is tight; it never overwrites controls.
+
+## Desktop docking prototype
+
+Run `cargo run --release --features desktop --bin rztop-desktop` for the native three-panel prototype. It samples CPU, GPU and per-process I/O every second. Drag a panel caption onto the highlighted side of another panel to split it there, or onto the center to group the panels as tabs. Drag a separator to resize. The desktop window restores its saved arrangement when reopened. **Reset layout** restores CPU above GPU and I/O.
+
+The terminal frontend remains the default Cargo target. Each frontend has its own window and layout settings.

@@ -1,5 +1,6 @@
 [package]
 name = "rztop"
+default-run = "rztop"
 description = "A terminal-based system monitor for Windows, forked from rtop"
 version = "0.24.0"
 edition = "2024"
@@ -10,8 +11,16 @@ rust-version = "1.95"
 
 [features]
 default = []
+desktop = ["dep:eframe", "dep:egui_dock"]
+
+[[bin]]
+name = "rztop-desktop"
+path = "src/bin/desktop.rs"
+required-features = ["desktop"]
 
 [dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "persistence"], optional = true }
+egui_dock = { version = "0.16", features = ["serde"], optional = true }
 arc-swap = "1"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"

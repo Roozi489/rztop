@@ -1,11 +1,7 @@
 //! Typed theme color and gradient key constants.
 //!
-//! Use these instead of raw string literals:
-//! ```
-//! use crate::theme_keys as tc;
-//! theme.color(tc::MAIN_FG);
-//! theme.gradient(tc::GRAD_CPU_UPPER);
-//! ```
+//! Pass a color key such as `MAIN_FG` to `Theme::color` and a gradient key
+//! such as `GRAD_CPU_UPPER` to `Theme::gradient`.
 
 /// Index-based color key for theme color lookups.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
