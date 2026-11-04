@@ -4,7 +4,7 @@ description = "A desktop system monitor for Windows, forked from rtop"
 version = "0.24.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
-repository = "https://github.com/Roozi489/rtop"
+repository = "https://github.com/Roozi489/rztop"
 authors = ["Freddie Haddad", "Roozi489"]
 rust-version = "1.95"
 
