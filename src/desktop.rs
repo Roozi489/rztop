@@ -1,7 +1,18 @@
+use crate::domain::process::IoSort;
 use crate::{
-    collect::{Collector, cpu::CpuCollector, gpu::GpuCollector, process::ProcCollector},
+    collect::{
+        Collector, cpu::CpuCollector, disk::DiskCollector, gpu::GpuCollector, memory::MemCollector,
+        process::ProcCollector,
+    },
     config::Config,
-    domain::{config_enums::TempScale, cpu::CpuInfo, gpu::GpuInfo, process::IoRates},
+    domain::{
+        config_enums::TempScale,
+        cpu::CpuInfo,
+        disk::{DiskFilter, DiskInfo},
+        gpu::GpuInfo,
+        memory::MemInfo,
+        process::ProcInfo,
+    },
     runner::LatestSlot,
     themes::{GradientDef, Rgb},
 };
@@ -19,7 +30,9 @@ use std::{
 };
 
 const TICK: Duration = Duration::from_secs(1);
-const LAYOUT: &str = "dock-layout-v1";
+/// Bumped whenever panels are added, so an older saved arrangement
+/// cannot hide the new panels.
+const LAYOUT: &str = "dock-layout-v2";
 /// Height of one text, meter or core row.
 const ROW: f32 = 18.0;
 /// Spacing between graph dots, horizontally and vertically.
@@ -33,13 +46,41 @@ enum Panel {
     Cpu,
     Gpu,
     Io,
+    Mem,
+    Disk,
+    CpuProcs,
+    MemProcs,
+    GpuProcs,
+    VramProcs,
 }
 
+impl Panel {
+    const ALL: [Panel; 9] = [
+        Panel::Cpu,
+        Panel::Gpu,
+        Panel::Io,
+        Panel::Mem,
+        Panel::Disk,
+        Panel::CpuProcs,
+        Panel::MemProcs,
+        Panel::GpuProcs,
+        Panel::VramProcs,
+    ];
+}
+
+/// Mirrors the terminal's default arrangement: CPU across the top, device
+/// panels on the left and the five process rankings stacked on the right.
 fn initial_layout() -> DockState<Panel> {
     let mut dock = DockState::new(vec![Panel::Cpu]);
     let tree = dock.main_surface_mut();
-    let [_, lower] = tree.split_below(NodeIndex::root(), 0.47, vec![Panel::Gpu]);
-    tree.split_right(lower, 0.45, vec![Panel::Io]);
+    let [_, gpu] = tree.split_below(NodeIndex::root(), 0.33, vec![Panel::Gpu]);
+    let [gpu, procs] = tree.split_right(gpu, 0.5, vec![Panel::CpuProcs]);
+    let [_, mem] = tree.split_below(gpu, 0.34, vec![Panel::Mem]);
+    tree.split_below(mem, 0.62, vec![Panel::Disk]);
+    let [_, rest] = tree.split_below(procs, 0.2, vec![Panel::MemProcs]);
+    let [_, rest] = tree.split_below(rest, 0.25, vec![Panel::Io]);
+    let [_, rest] = tree.split_below(rest, 1.0 / 3.0, vec![Panel::GpuProcs]);
+    tree.split_below(rest, 0.5, vec![Panel::VramProcs]);
     dock
 }
 
@@ -87,11 +128,20 @@ struct Look {
     gpu_clock: Gradient,
     gpu_power: Gradient,
     gpu_vram: Gradient,
-    process: Gradient,
+    used: Gradient,
+    available: Gradient,
+    cached: Gradient,
+    disk_read: Gradient,
+    disk_write: Gradient,
+    disk_busy: Gradient,
     cpu_clock_max_mhz: i64,
     gpu_clock_max_mhz: i64,
     gpu_power_max_watts: i64,
     temp_scale: TempScale,
+    swap_max_mib: i64,
+    per_core: bool,
+    base_10: bool,
+    disk_filter: DiskFilter,
 }
 
 impl Look {
@@ -113,12 +163,29 @@ impl Look {
             gpu_clock: Gradient::new(&g.gpu_clock),
             gpu_power: Gradient::new(&g.gpu_power),
             gpu_vram: Gradient::new(&g.gpu_vram),
-            process: Gradient::new(&g.process),
+            used: Gradient::new(&g.used),
+            available: Gradient::new(&g.available),
+            cached: Gradient::new(&g.cached),
+            disk_read: Gradient::new(&g.disk_read),
+            disk_write: Gradient::new(&g.disk_write),
+            disk_busy: Gradient::new(&g.disk_busy),
             cpu_clock_max_mhz: config.cpu.cpu_clock_max_mhz,
             gpu_clock_max_mhz: config.gpu.gpu_clock_max_mhz,
             gpu_power_max_watts: config.gpu.gpu_power_max_watts,
             temp_scale: config.cpu.temp_scale,
+            swap_max_mib: config.mem.swap_max_mib,
+            per_core: config.view.proc_per_core,
+            base_10: config.ui.base_10_sizes,
+            disk_filter: DiskFilter::parse(&config.disk.disk_filter),
         }
+    }
+
+    fn bytes(&self, value: u64) -> String {
+        crate::tools::floating_humanizer(value, true, 0, false, false, self.base_10)
+    }
+
+    fn rate(&self, value: u64) -> String {
+        crate::tools::floating_humanizer(value, true, 0, false, true, self.base_10)
     }
 
     fn temp(&self, celsius: i64) -> String {
@@ -130,7 +197,9 @@ impl Look {
 struct Sample {
     cpu: CpuInfo,
     gpus: Vec<GpuInfo>,
-    io: Vec<(String, Option<IoRates>)>,
+    mem: MemInfo,
+    disks: Vec<DiskInfo>,
+    procs: Vec<ProcInfo>,
 }
 
 struct Monitor {
@@ -147,20 +216,23 @@ impl Monitor {
         let worker = std::thread::spawn(move || {
             let mut cpu = CpuCollector::new();
             let mut gpu = GpuCollector::new();
+            let mut mem = MemCollector::new();
+            let mut disk = DiskCollector::new();
             let mut processes = ProcCollector::new();
             processes.set_core_count(crate::collect::cpu::get_core_count());
             loop {
                 let start = std::time::Instant::now();
                 cpu.collect();
                 gpu.collect();
+                mem.collect();
+                disk.collect();
                 processes.collect();
-                let mut procs = processes.snapshot().procs;
-                procs.sort_by_key(|p| (std::cmp::Reverse(p.io_rates.map(|r| r.total())), p.pid));
-                let io = procs.into_iter().map(|p| (p.name, p.io_rates)).collect();
                 slot.publish(Sample {
                     cpu: cpu.snapshot().info,
                     gpus: gpu.snapshot().devices,
-                    io,
+                    mem: mem.snapshot().info,
+                    disks: disk.snapshot().info.disks,
+                    procs: processes.snapshot().procs,
                 });
                 ctx.request_repaint();
                 if rx.recv_timeout(TICK.saturating_sub(start.elapsed()))
@@ -191,6 +263,7 @@ struct Desktop {
     monitor: Monitor,
     dock: DockState<Panel>,
     gpu: usize,
+    sorts: Sorts,
     look: Look,
 }
 
@@ -214,6 +287,7 @@ impl eframe::App for Desktop {
                     captions: Vec::new(),
                     sample: self.monitor.latest.latest(),
                     gpu: &mut self.gpu,
+                    sorts: &mut self.sorts,
                     look: &self.look,
                 };
                 show_dock(ui, &mut self.dock, &mut panels);
@@ -229,10 +303,8 @@ fn show_dock(ui: &mut Ui, dock: &mut DockState<Panel>, panels: &mut Panels) {
     style.tab_bar.height = 22.0;
     style.tab.tab_body.inner_margin = egui::Margin::same(8);
     style.overlay.overlay_type = egui_dock::OverlayType::HighlightedAreas;
-    // A completed library drag can renumber the entire three-panel tree.
-    let positions = |dock: &DockState<Panel>| {
-        [Panel::Cpu, Panel::Gpu, Panel::Io].map(|panel| dock.find_tab(&panel))
-    };
+    // A completed library drag can renumber the entire panel tree.
+    let positions = |dock: &DockState<Panel>| Panel::ALL.map(|panel| dock.find_tab(&panel));
     let before = positions(dock);
     DockArea::new(dock)
         .style(style)
@@ -393,8 +465,10 @@ fn meter_row(
         mono(),
         value_color,
     );
+    // Six-character labels share one meter start; longer ones (disk names) push it right.
+    let label_chars = label.chars().count().max(6) + 1;
     let bar = Rect::from_min_max(
-        pos2(rect.left() + 7.0 * cw, rect.top() + 4.0),
+        pos2(rect.left() + label_chars as f32 * cw, rect.top() + 4.0),
         pos2(rect.right() - 11.0 * cw, rect.bottom() - 4.0),
     );
     if let Some(pct) = pct
@@ -414,17 +488,49 @@ enum Grow {
 /// column is one sample; each dot takes the gradient colour of its height.
 /// Columns without history show the zero baseline.
 fn dot_graph(painter: &Painter, rect: Rect, series: &VecDeque<i64>, grow: Grow, grad: &Gradient) {
-    let cols = (rect.width() / DOT).floor() as usize;
+    dot_graph_scaled(painter, rect, series, grow, grad, 100);
+}
+
+fn graph_columns(width: f32) -> usize {
+    (width / DOT).floor().max(0.0) as usize
+}
+
+/// Largest value in the visible window, so throughput graphs auto-scale
+/// like the terminal's disk rows. Never below 1.
+fn visible_max(series: &VecDeque<i64>, width: f32, current: u64) -> i64 {
+    let cols = graph_columns(width);
+    series
+        .iter()
+        .skip(series.len().saturating_sub(cols))
+        .copied()
+        .chain(std::iter::once(i64::try_from(current).unwrap_or(i64::MAX)))
+        .max()
+        .unwrap_or(0)
+        .max(1)
+}
+
+/// [`dot_graph`] for a series whose full scale is `max` rather than 100.
+fn dot_graph_scaled(
+    painter: &Painter,
+    rect: Rect,
+    series: &VecDeque<i64>,
+    grow: Grow,
+    grad: &Gradient,
+    max: i64,
+) {
+    let cols = graph_columns(rect.width());
     let rows = ((rect.height() / DOT).floor() as usize).max(1);
     if cols == 0 {
         return;
     }
+    let max = max.max(1) as f32;
     let skip = series.len().saturating_sub(cols);
     let pad = cols - (series.len() - skip);
     let values = std::iter::repeat_n(0, pad).chain(series.iter().skip(skip).copied());
     for (col, value) in values.enumerate() {
         let x = rect.right() - (cols - col) as f32 * DOT + DOT / 2.0;
-        let height = (value.clamp(0, 100) as f32 / 100.0 * rows as f32).round() as usize;
+        let fraction = (value.max(0) as f32 / max).min(1.0);
+        let height = (fraction * rows as f32).round() as usize;
         for r in 0..height.clamp(1, rows) {
             let offset = (r as f32 + 0.5) * DOT;
             let y = match grow {
@@ -736,7 +842,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
 
     if let Some(pct) = gpu.mem_used.saturating_mul(100).checked_div(gpu.mem_total) {
         let pct = pct.min(100) as i64;
-        let vram = format!("{}/{}", bytes(gpu.mem_used), bytes(gpu.mem_total));
+        let vram = format!("{}/{}", look.bytes(gpu.mem_used), look.bytes(gpu.mem_total));
         meter_row(ui, look, "VRAM", Some(pct), &vram, &look.gpu_vram);
     }
 
@@ -765,64 +871,415 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: &mut usize) {
     }
 }
 
-fn io_panel(ui: &mut Ui, look: &Look, io: &[(String, Option<IoRates>)]) {
+fn pct_of(value: u64, capacity: u64) -> Option<i64> {
+    value
+        .saturating_mul(100)
+        .checked_div(capacity)
+        .map(|pct| pct.min(100) as i64)
+}
+
+/// Used / Avail / Cache / Commit / Swap meters, then the used-memory history.
+fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) {
+    let s = &mem.stats;
+    let total = s.used + s.available;
+    let title = row(ui);
+    ui.painter().text(
+        title.right_center(),
+        Align2::RIGHT_CENTER,
+        look.bytes(total),
+        mono(),
+        look.fg,
+    );
+    meter_row(
+        ui,
+        look,
+        "Used",
+        pct_of(s.used, total),
+        &look.bytes(s.used),
+        &look.used,
+    );
+    meter_row(
+        ui,
+        look,
+        "Avail",
+        pct_of(s.available, total),
+        &look.bytes(s.available),
+        &look.available,
+    );
+    if s.cached > 0 {
+        meter_row(
+            ui,
+            look,
+            "Cache",
+            pct_of(s.cached, total),
+            &look.bytes(s.cached),
+            &look.cached,
+        );
+    }
+    let commit = if s.commit_limit > 0 {
+        format!(
+            "{}/{}",
+            look.bytes(s.commit_used),
+            look.bytes(s.commit_limit)
+        )
+    } else {
+        "N/A".to_owned()
+    };
+    let commit_pct = pct_of(s.commit_used, s.commit_limit);
+    meter_row(ui, look, "Commit", commit_pct, &commit, &look.cpu_upper);
+
+    // A positive swap_max_mib shows allocation against a growth ceiling;
+    // otherwise usage against current allocation (see README "Swap").
+    let ceiling = u64::try_from(look.swap_max_mib.max(0)).unwrap_or(0) * 1024 * 1024;
+    if s.swap_total > 0 || ceiling > 0 {
+        let value = if ceiling > 0 {
+            s.swap_total
+        } else {
+            s.swap_used
+        };
+        let capacity = s.swap_total.max(ceiling);
+        let text = format!("{}/{}", look.bytes(value), look.bytes(capacity));
+        meter_row(ui, look, "Swap", pct_of(value, capacity), &text, &look.used);
+    }
+
+    ui.add_space(6.0);
+    let rest = ui.available_rect_before_wrap();
+    if rest.height() >= ROW + 3.0 * DOT && rest.width() > 4.0 * DOT {
+        let (rect, _) = ui.allocate_exact_size(rest.size(), Sense::hover());
+        let painter = ui.painter_at(rect);
+        dot_graph(&painter, rect, &mem.percent.used, Grow::Up, &look.used);
+        let now = last(&mem.percent.used);
+        caption(
+            &painter,
+            look,
+            rect.right_top() + vec2(-2.0, 2.0),
+            Align2::RIGHT_TOP,
+            format!("used {now}%"),
+            look.used.at(now),
+        );
+    }
+}
+
+/// Per drive: a usage meter, then read/write throughput graphs and busy time.
+fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
+    let disks = look.disk_filter.apply(disks);
+    if disks.is_empty() {
+        ui.label(text("No disks", look.label));
+        return;
+    }
     let cw = char_width(ui);
-    let column = 10.0 * cw;
+    for disk in disks {
+        let label = format!("{} {}", disk.name, disk.fstype);
+        let usage = format!("{}/{}", look.bytes(disk.used), look.bytes(disk.total));
+        let used = i64::from(disk.used_percent.clamp(0, 100));
+        meter_row(ui, look, &label, Some(used), &usage, &look.available);
+
+        let line = row(ui);
+        let painter = ui.painter();
+        let cy = line.center().y;
+        let busy = i64::from(disk.busy_percent.clamp(0, 100));
+        painter.text(
+            line.right_center(),
+            Align2::RIGHT_CENTER,
+            format!("{busy}%"),
+            mono(),
+            look.disk_busy.at(busy),
+        );
+        painter.text(
+            pos2(line.right() - 6.0 * cw, cy),
+            Align2::LEFT_CENTER,
+            "B",
+            mono(),
+            look.fg,
+        );
+        let speed_w = 9.0 * cw;
+        let left_end = line.right() - 7.0 * cw;
+        let graph_w = ((left_end - line.left() - 2.0 * (cw + speed_w) - 2.0 * cw) / 2.0).max(0.0);
+        let mut x = line.left();
+        let streams = [
+            (
+                "R",
+                &disk.read_history,
+                disk.read_bytes_per_sec,
+                &look.disk_read,
+            ),
+            (
+                "W",
+                &disk.write_history,
+                disk.write_bytes_per_sec,
+                &look.disk_write,
+            ),
+        ];
+        for (letter, history, current, grad) in streams {
+            let max = visible_max(history, graph_w, current);
+            let now = (i64::try_from(current)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(100)
+                / max)
+                .min(100);
+            painter.text(pos2(x, cy), Align2::LEFT_CENTER, letter, mono(), look.fg);
+            painter.text(
+                pos2(x + cw + speed_w, cy),
+                Align2::RIGHT_CENTER,
+                look.rate(current),
+                mono(),
+                grad.at(now),
+            );
+            x += cw + speed_w + cw / 2.0;
+            let graph = Rect::from_min_max(
+                pos2(x, line.top() + 2.0),
+                pos2(x + graph_w, line.bottom() - 2.0),
+            );
+            if graph.width() > DOT {
+                dot_graph_scaled(&ui.painter_at(graph), graph, history, Grow::Up, grad, max);
+            }
+            x += graph_w + cw;
+        }
+        ui.add_space(4.0);
+    }
+}
+
+/// One right-aligned value column of a process table.
+struct Column {
+    header: &'static str,
+    chars: f32,
+    clickable: bool,
+}
+
+fn column(header: &'static str, chars: f32) -> Column {
+    Column {
+        header,
+        chars,
+        clickable: false,
+    }
+}
+
+/// Right edge of each value column, packed against `right`.
+fn column_edges(right: f32, columns: &[Column], cw: f32) -> Vec<f32> {
+    let mut edges = vec![0.0; columns.len()];
+    let mut x = right;
+    for (edge, column) in edges.iter_mut().zip(columns).rev() {
+        *edge = x;
+        x -= column.chars * cw;
+    }
+    edges
+}
+
+type Cell = (String, Color32);
+
+/// Program column plus fixed-width value columns; only visible rows are
+/// built. Returns the index of a clicked sortable header.
+fn table(
+    ui: &mut Ui,
+    look: &Look,
+    columns: &[Column],
+    rows: usize,
+    cell: impl Fn(usize) -> (String, Vec<Cell>),
+) -> Option<usize> {
+    let cw = char_width(ui);
     let header = row(ui);
-    let painter = ui.painter();
+    let edges = column_edges(header.right(), columns, cw);
     let cy = header.center().y;
-    painter.text(
+    ui.painter().text(
         header.left_center(),
         Align2::LEFT_CENTER,
         "Program",
         mono(),
         look.fg,
     );
-    for (k, name) in ["Total▼", "Write/s", "Read/s"].into_iter().enumerate() {
-        let x = header.right() - k as f32 * column;
-        painter.text(pos2(x, cy), Align2::RIGHT_CENTER, name, mono(), look.fg);
+    let mut clicked = None;
+    for (i, (column, &edge)) in columns.iter().zip(&edges).enumerate() {
+        ui.painter().text(
+            pos2(edge, cy),
+            Align2::RIGHT_CENTER,
+            column.header,
+            mono(),
+            look.fg,
+        );
+        if column.clickable {
+            let rect = Rect::from_min_max(
+                pos2(edge - column.chars * cw, header.top()),
+                pos2(edge, header.bottom()),
+            );
+            let response = ui
+                .interact(rect, ui.id().with(("sort", i)), Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            if response.clicked() {
+                clicked = Some(i);
+            }
+        }
     }
+    let name_right = match (edges.first(), columns.first()) {
+        (Some(edge), Some(first)) => edge - first.chars * cw - cw,
+        _ => header.right(),
+    };
     egui::ScrollArea::vertical()
         .auto_shrink(false)
-        .show_rows(ui, ROW, io.len(), |ui, rows| {
-            for (name, rates) in &io[rows] {
+        .show_rows(ui, ROW, rows, |ui, range| {
+            for index in range {
                 let line = row(ui);
+                let (name, values) = cell(index);
                 let painter = ui.painter();
                 let cy = line.center().y;
-                let name_chars = ((line.width() - 3.0 * column - cw) / cw).max(1.0) as usize;
-                let name = crate::tools::ljust(name, name_chars, true);
+                let chars = ((name_right - line.left()) / cw).max(1.0) as usize;
                 painter.text(
                     line.left_center(),
                     Align2::LEFT_CENTER,
-                    name,
+                    crate::tools::ljust(&name, chars, true),
                     mono(),
                     look.fg,
                 );
-                let values = [
-                    rates.map(|r| r.total()),
-                    rates.map(|r| r.write),
-                    rates.map(|r| r.read),
-                ];
-                for (k, value) in values.into_iter().enumerate() {
-                    let (label, color) = match value {
-                        Some(v) => (
-                            crate::tools::floating_humanizer(v, true, 0, false, true, false),
-                            look.process
-                                .at((v.saturating_mul(100) / IO_FULL_SCALE).min(100) as i64),
-                        ),
-                        None => ("N/A".to_owned(), look.label),
-                    };
-                    let x = line.right() - k as f32 * column;
-                    painter.text(pos2(x, cy), Align2::RIGHT_CENTER, label, mono(), color);
+                for ((value, color), &edge) in values.into_iter().zip(&edges) {
+                    painter.text(pos2(edge, cy), Align2::RIGHT_CENTER, value, mono(), color);
                 }
             }
         });
+    clicked
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ranking {
+    Cpu,
+    Mem,
+    Gpu,
+    Vram,
+    Io,
+}
+
+/// Sort choices the user can change by clicking headers, seeded from config.
+struct Sorts {
+    mem_ram: bool,
+    io: IoSort,
+}
+
+fn desc_f64(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(a), Some(b)) => b.total_cmp(&a),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+/// Processes for one ranking, highest first, unknown values last, ties by
+/// PID. The System Idle Process (PID 0) is not a consumer and is omitted.
+fn ranked<'a>(procs: &'a [ProcInfo], ranking: Ranking, sorts: &Sorts) -> Vec<&'a ProcInfo> {
+    let mut list: Vec<&ProcInfo> = procs.iter().filter(|p| p.pid != 0).collect();
+    let io = |p: &ProcInfo| p.io_rates.map(|r| sorts.io.value(r));
+    list.sort_by(|a, b| {
+        let order = match ranking {
+            Ranking::Cpu => b.cpu_p.total_cmp(&a.cpu_p),
+            Ranking::Mem if sorts.mem_ram => b.ram.cmp(&a.ram),
+            Ranking::Mem => b.mem.cmp(&a.mem),
+            Ranking::Gpu => desc_f64(a.gpu_p, b.gpu_p),
+            Ranking::Vram => b.gpu_mem.cmp(&a.gpu_mem),
+            Ranking::Io => io(b).cmp(&io(a)),
+        };
+        order.then(a.pid.cmp(&b.pid))
+    });
+    list
+}
+
+/// The five process rankings. Primary columns use the CPU gradient; the
+/// other columns are dimmed, as in the terminal.
+fn ranking_panel(ui: &mut Ui, look: &Look, sample: &Sample, ranking: Ranking, sorts: &mut Sorts) {
+    let list = ranked(&sample.procs, ranking, sorts);
+    let total_mem = sample.mem.stats.used + sample.mem.stats.available;
+    let total_vram = sample.gpus.iter().map(|g| g.mem_total).max().unwrap_or(0);
+    let cores = sample.cpu.core_count;
+    let ramp = |pct: Option<i64>| pct.map_or(look.dim, |pct| look.cpu_upper.at(pct));
+    let cpu =
+        |p: &ProcInfo| crate::domain::process::display_cpu_percent(p.cpu_p, cores, look.per_core);
+    let gpu = |p: &ProcInfo| {
+        p.gpu_p
+            .map_or_else(|| "N/A".to_owned(), |v| format!("{v:.1}"))
+    };
+    let vram = |p: &ProcInfo| {
+        p.gpu_mem
+            .map_or_else(|| "N/A".to_owned(), |v| look.bytes(v))
+    };
+    let arrow =
+        |on: bool, with: &'static str, without: &'static str| if on { with } else { without };
+
+    let mut columns = match ranking {
+        Ranking::Cpu => vec![
+            column("CPU%▼", 7.0),
+            column("RAM", 7.0),
+            column("Commit", 9.0),
+        ],
+        Ranking::Mem => vec![
+            column("CPU%", 7.0),
+            column(arrow(sorts.mem_ram, "RAM▼", "RAM"), 7.0),
+            column(arrow(!sorts.mem_ram, "Commit▼", "Commit"), 9.0),
+        ],
+        Ranking::Gpu => vec![column("GPU%▼", 7.0), column("VRAM", 8.0)],
+        Ranking::Vram => vec![column("GPU%", 7.0), column("VRAM▼", 8.0)],
+        Ranking::Io => vec![
+            column(arrow(sorts.io == IoSort::Read, "Read/s▼", "Read/s"), 10.0),
+            column(
+                arrow(sorts.io == IoSort::Write, "Write/s▼", "Write/s"),
+                10.0,
+            ),
+            column(arrow(sorts.io == IoSort::Total, "Total▼", "Total"), 10.0),
+        ],
+    };
+    match ranking {
+        Ranking::Mem => columns[1..].iter_mut().for_each(|c| c.clickable = true),
+        Ranking::Io => columns.iter_mut().for_each(|c| c.clickable = true),
+        _ => {}
+    }
+
+    let clicked = table(ui, look, &columns, list.len(), |i| {
+        let p = list[i];
+        let values = match ranking {
+            Ranking::Cpu => {
+                let pct = cpu(p);
+                vec![
+                    (format!("{pct:.1}"), look.cpu_upper.at(pct as i64)),
+                    (look.bytes(p.ram), look.dim),
+                    (look.bytes(p.mem), look.dim),
+                ]
+            }
+            Ranking::Mem => vec![
+                (format!("{:.1}", cpu(p)), look.dim),
+                (look.bytes(p.ram), ramp(pct_of(p.ram, total_mem))),
+                (look.bytes(p.mem), ramp(pct_of(p.mem, total_mem))),
+            ],
+            Ranking::Gpu => vec![
+                (gpu(p), ramp(p.gpu_p.map(|v| v as i64))),
+                (vram(p), look.dim),
+            ],
+            Ranking::Vram => vec![
+                (gpu(p), look.dim),
+                (vram(p), ramp(p.gpu_mem.and_then(|v| pct_of(v, total_vram)))),
+            ],
+            Ranking::Io => [IoSort::Read, IoSort::Write, IoSort::Total]
+                .into_iter()
+                .map(|kind| match p.io_rates.map(|r| kind.value(r)) {
+                    Some(v) => (
+                        look.rate(v),
+                        look.cpu_upper
+                            .at((v.saturating_mul(100) / IO_FULL_SCALE).min(100) as i64),
+                    ),
+                    None => ("N/A".to_owned(), look.label),
+                })
+                .collect(),
+        };
+        (p.name.clone(), values)
+    });
+    match (ranking, clicked) {
+        (Ranking::Mem, Some(i)) => sorts.mem_ram = i == 1,
+        (Ranking::Io, Some(i)) => sorts.io = [IoSort::Read, IoSort::Write, IoSort::Total][i],
+        _ => {}
+    }
 }
 
 struct Panels<'a> {
     captions: Vec<(Panel, egui::Rect)>,
     sample: Option<Arc<Sample>>,
     gpu: &'a mut usize,
+    sorts: &'a mut Sorts,
     look: &'a Look,
 }
 
@@ -834,6 +1291,12 @@ impl TabViewer for Panels<'_> {
                 Panel::Cpu => "┤ CPU ├",
                 Panel::Gpu => "┤ GPU ├",
                 Panel::Io => "┤ I/O processes ├",
+                Panel::Mem => "┤ Memory ├",
+                Panel::Disk => "┤ Disks ├",
+                Panel::CpuProcs => "┤ CPU processes ├",
+                Panel::MemProcs => "┤ Memory processes ├",
+                Panel::GpuProcs => "┤ GPU processes ├",
+                Panel::VramProcs => "┤ VRAM processes ├",
             },
             self.look.fg,
         )
@@ -858,13 +1321,15 @@ impl TabViewer for Panels<'_> {
         match panel {
             Panel::Cpu => cpu_panel(ui, self.look, &sample.cpu),
             Panel::Gpu => gpu_panel(ui, self.look, &sample.gpus, self.gpu),
-            Panel::Io => io_panel(ui, self.look, &sample.io),
+            Panel::Mem => mem_panel(ui, self.look, &sample.mem),
+            Panel::Disk => disk_panel(ui, self.look, &sample.disks),
+            Panel::Io => ranking_panel(ui, self.look, &sample, Ranking::Io, self.sorts),
+            Panel::CpuProcs => ranking_panel(ui, self.look, &sample, Ranking::Cpu, self.sorts),
+            Panel::MemProcs => ranking_panel(ui, self.look, &sample, Ranking::Mem, self.sorts),
+            Panel::GpuProcs => ranking_panel(ui, self.look, &sample, Ranking::Gpu, self.sorts),
+            Panel::VramProcs => ranking_panel(ui, self.look, &sample, Ranking::Vram, self.sorts),
         }
     }
-}
-
-fn bytes(value: u64) -> String {
-    crate::tools::floating_humanizer(value, true, 0, false, false, false)
 }
 
 fn load_config() -> Config {
@@ -878,10 +1343,15 @@ fn load_config() -> Config {
 }
 
 pub fn run_desktop() -> eframe::Result {
-    let look = Look::new(&load_config());
+    let config = load_config();
+    let look = Look::new(&config);
+    let sorts = Sorts {
+        mem_ram: config.proc.memory_sort_ram,
+        io: config.proc.io_sort,
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1150.0, 900.0])
+            .with_inner_size([1150.0, 975.0])
             .with_min_inner_size([410.0, 320.0]),
         ..Default::default()
     };
@@ -907,6 +1377,7 @@ pub fn run_desktop() -> eframe::Result {
                 dock,
                 monitor: Monitor::new(cc.egui_ctx.clone()),
                 gpu: 0,
+                sorts,
                 look,
             }))
         }),
@@ -942,6 +1413,44 @@ mod tests {
     }
 
     #[test]
+    fn rankings_sort_descending_with_unknowns_last_and_skip_idle() {
+        use crate::domain::process::IoRates;
+        let proc = |pid, cpu_p, ram, mem, gpu_p, io: Option<(u64, u64)>| ProcInfo {
+            pid,
+            cpu_p,
+            ram,
+            mem,
+            gpu_p,
+            io_rates: io.map(|(read, write)| IoRates { read, write }),
+            ..Default::default()
+        };
+        let procs = vec![
+            proc(0, 99.0, 0, 0, Some(99.0), Some((99, 99))),
+            proc(4, 5.0, 100, 900, None, None),
+            proc(8, 20.0, 700, 200, Some(1.0), Some((10, 500))),
+            proc(12, 20.0, 300, 300, Some(3.0), Some((400, 0))),
+        ];
+        let mut sorts = Sorts {
+            mem_ram: false,
+            io: IoSort::Total,
+        };
+        let pids = |ranking, sorts: &Sorts| -> Vec<u32> {
+            ranked(&procs, ranking, sorts)
+                .iter()
+                .map(|p| p.pid)
+                .collect()
+        };
+        assert_eq!(pids(Ranking::Cpu, &sorts), [8, 12, 4]);
+        assert_eq!(pids(Ranking::Mem, &sorts), [4, 12, 8]);
+        assert_eq!(pids(Ranking::Gpu, &sorts), [12, 8, 4]);
+        assert_eq!(pids(Ranking::Io, &sorts), [8, 12, 4]);
+        sorts.mem_ram = true;
+        sorts.io = IoSort::Read;
+        assert_eq!(pids(Ranking::Mem, &sorts), [8, 12, 4]);
+        assert_eq!(pids(Ranking::Io, &sorts), [12, 8, 4]);
+    }
+
+    #[test]
     fn dragging_io_caption_to_cpu_right_edge_creates_a_new_split() {
         let ctx = egui::Context::default();
         let look = Look::new(&Config::new());
@@ -964,6 +1473,10 @@ mod tests {
                             captions: Vec::new(),
                             sample: None,
                             gpu: &mut 0,
+                            sorts: &mut Sorts {
+                                mem_ram: false,
+                                io: IoSort::Total,
+                            },
                             look: &look,
                         },
                     );
@@ -1000,7 +1513,7 @@ mod tests {
             (io.top() - cpu.top()).abs() < 2.0 && io.left() >= cpu.right() - 2.0,
             "cpu={cpu:?} io={io:?}"
         );
-        assert_eq!(dock.iter_all_tabs().count(), 3);
+        assert_eq!(dock.iter_all_tabs().count(), Panel::ALL.len());
         // A rapid gesture can arrive entirely within one Windows repaint.
         dock = initial_layout();
         frame(&mut dock, vec![]);
