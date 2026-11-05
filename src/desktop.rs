@@ -39,6 +39,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod settings;
+mod theme_picker;
+
 /// Bumped whenever panels are added, so an older saved arrangement
 /// cannot hide the new panels.
 const LAYOUT: &str = "dock-layout-v3";
@@ -238,21 +241,29 @@ struct Look {
     dim: Color32,
     meter_off: Color32,
     selected: Color32,
-    cpu_upper: Gradient,
-    cpu_lower: Gradient,
+    // Colour roles: a metric takes the gradient for what its number means,
+    // whichever panel shows it. Each role maps onto one theme gradient.
+    /// Utilization: CPU, cores, GPU, disk busy, process CPU/GPU, I/O total, ping.
+    load: Gradient,
+    /// Second load series: the system half of the CPU graph.
+    load2: Gradient,
+    /// CPU, GPU and per-core temperature, positioned by degrees Celsius.
     temp: Gradient,
+    /// CPU and GPU power draw.
+    power: Gradient,
+    /// CPU and GPU clocks.
+    clock: Gradient,
+    /// How full: RAM used, commit, swap, VRAM, disk space, process memory.
+    fill: Gradient,
+    /// Memory breakdown bars, kept distinct from Used.
+    mem_avail: Gradient,
+    mem_cache: Gradient,
+    /// Inbound data: network download, disk read, process I/O read.
+    inbound: Gradient,
+    /// Outbound data: network upload, disk write, process I/O write.
+    outbound: Gradient,
     /// Warning text, e.g. the not-admin notice.
     warn: Color32,
-    gpu: Gradient,
-    gpu_clock: Gradient,
-    gpu_power: Gradient,
-    gpu_vram: Gradient,
-    used: Gradient,
-    available: Gradient,
-    cached: Gradient,
-    disk_read: Gradient,
-    disk_write: Gradient,
-    disk_busy: Gradient,
     cpu_clock_max_mhz: i64,
     gpu_clock_max_mhz: i64,
     gpu_power_max_watts: i64,
@@ -261,8 +272,6 @@ struct Look {
     per_core: bool,
     base_10: bool,
     disk_filter: DiskFilter,
-    download: Gradient,
-    upload: Gradient,
     hi: Color32,
     statusbar_bg: Color32,
     statusbar_fg: Color32,
@@ -286,21 +295,18 @@ impl Look {
             dim: rgb(c.graph_text),
             meter_off: mix(bg, rgb(c.meter_bg), 0.6),
             selected: rgb(c.selected_bg),
-            cpu_upper: Gradient::new(&g.cpu_upper),
-            cpu_lower: Gradient::new(&g.cpu_lower),
+            load: Gradient::new(&g.cpu_upper),
+            load2: Gradient::new(&g.cpu_lower),
             temp: Gradient::new(&g.temp),
+            power: Gradient::new(&g.gpu_power),
+            clock: Gradient::new(&g.gpu_clock),
+            fill: Gradient::new(&g.used),
+            mem_avail: Gradient::new(&g.available),
+            mem_cache: Gradient::new(&g.cached),
+            inbound: Gradient::new(&g.download),
+            outbound: Gradient::new(&g.upload),
             // The temperature ramp passes yellow/orange around its middle.
             warn: Gradient::new(&g.temp).at(60),
-            gpu: Gradient::new(&g.gpu),
-            gpu_clock: Gradient::new(&g.gpu_clock),
-            gpu_power: Gradient::new(&g.gpu_power),
-            gpu_vram: Gradient::new(&g.gpu_vram),
-            used: Gradient::new(&g.used),
-            available: Gradient::new(&g.available),
-            cached: Gradient::new(&g.cached),
-            disk_read: Gradient::new(&g.disk_read),
-            disk_write: Gradient::new(&g.disk_write),
-            disk_busy: Gradient::new(&g.disk_busy),
             cpu_clock_max_mhz: config.cpu.cpu_clock_max_mhz,
             gpu_clock_max_mhz: config.gpu.gpu_clock_max_mhz,
             gpu_power_max_watts: config.gpu.gpu_power_max_watts,
@@ -309,8 +315,6 @@ impl Look {
             per_core: config.view.proc_per_core,
             base_10: config.ui.base_10_sizes,
             disk_filter: DiskFilter::parse(&config.disk.disk_filter),
-            download: Gradient::new(&g.download),
-            upload: Gradient::new(&g.upload),
             hi: rgb(c.hi_fg),
             statusbar_bg: rgb(c.statusbar_bg),
             statusbar_fg: rgb(c.statusbar_fg),
@@ -593,6 +597,14 @@ struct Desktop {
     saved: Option<SavedLayout>,
     /// Write `saved` to storage at the end of this frame.
     store_saved: bool,
+    /// The configuration in effect, edited by the Settings window.
+    config: Config,
+    config_path: std::path::PathBuf,
+    settings: settings::Settings,
+    /// Settings changed and not yet written to `rztop.toml`.
+    config_dirty: bool,
+    /// Outcome of the last write to `rztop.toml`, shown in Settings.
+    config_saved: Option<Result<(), String>>,
 }
 
 /// A layout the user chose to keep, with the window's position and size, so
@@ -652,10 +664,12 @@ impl Desktop {
             clicked
         };
         let mut layout_action = None;
+        let mut open_settings = false;
         let mut elevate = false;
         let mut step = None;
         let has_saved = self.saved.is_some();
         ui.horizontal(|ui| {
+            open_settings = chip(ui, &[("settings", look.statusbar_hi, true)]).is_some();
             // `[layout save load reset]`; load is dimmed until something is saved.
             let load = if has_saved {
                 look.statusbar_hi
@@ -721,6 +735,9 @@ impl Desktop {
             });
         });
         let ctx = ui.ctx().clone();
+        if open_settings {
+            self.settings.toggle();
+        }
         match layout_action {
             Some(1) => {
                 let (outer, inner) =
@@ -756,10 +773,59 @@ impl Desktop {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if let Some(i) = step {
-            let ms = self.monitor.interval.load(Relaxed);
+            let ms = step_interval(self.monitor.interval.load(Relaxed), i == 2);
+            self.monitor.interval.store(ms, Relaxed);
+            // Kept like a Settings change, so the interval survives a restart.
+            self.config.refresh.update_ms = ms as i64;
+            self.config_dirty = true;
+        }
+    }
+
+    /// Show the Settings window and apply whatever it changed.
+    fn settings_window(&mut self, ctx: &egui::Context, sample: Option<&Sample>) {
+        let log_dir = crate::tools::data_dir();
+        let info = settings::Context {
+            nets: sample.map_or(&[], |s| s.nets.as_slice()),
+            drives: sample.map_or_else(Vec::new, |s| {
+                s.disks.iter().map(|d| d.name.clone()).collect()
+            }),
+            config_path: &self.config_path,
+            log_dir: &log_dir,
+            saved: self.config_saved.as_ref(),
+        };
+        let changes = self.settings.show(ctx, &mut self.config, &self.look, &info);
+        if changes.look {
+            self.look = Look::new(&self.config);
+        }
+        if changes.theme {
+            apply_style(ctx, &self.look);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(app_icon(
+                &self.look,
+            )))));
+        }
+        if changes.interval {
+            let ms = u64::try_from(self.config.refresh.update_ms).unwrap_or(1000);
             self.monitor
                 .interval
-                .store(step_interval(ms, i == 2), Relaxed);
+                .store(ms.clamp(100, 86_400_000), Relaxed);
+        }
+        if changes.net {
+            self.net.selected.clone_from(&self.config.view.net_iface);
+            self.net.auto = self.config.view.net_auto;
+            self.net.sync = self.config.view.net_sync;
+        }
+        if changes.log {
+            crate::log::set_level(self.config.log.log_level);
+        }
+        self.config_dirty |= changes.any;
+        // Save once a drag or click has finished, not on every step of it.
+        if self.config_dirty && !ctx.input(|i| i.pointer.any_down()) {
+            self.config_dirty = false;
+            let result = self.config.save(&self.config_path);
+            if let Err(e) = &result {
+                tracing::warn!(subsystem = %crate::log::Subsystem::Config, error = %e, "config save failed");
+            }
+            self.config_saved = Some(result.map_err(|e| e.to_string()));
         }
     }
 }
@@ -807,6 +873,8 @@ impl eframe::App for Desktop {
                     ui.ctx().request_repaint();
                 }
             });
+        let sample = self.monitor.latest.latest();
+        self.settings_window(ctx, sample.as_deref());
         // Keep the statusbar clock ticking on the second, between samples.
         let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1163,15 +1231,15 @@ fn cpu_graph(ui: &Ui, look: &Look, cpu: &CpuInfo, rect: Rect) {
     let (user, system) = (&cpu.cpu_percent.user, &cpu.cpu_percent.system);
     let upper = Rect::from_min_max(rect.min, pos2(rect.right(), mid - 1.0));
     let lower = Rect::from_min_max(pos2(rect.left(), mid + 1.0), rect.max);
-    dot_graph(&painter, upper, user, Grow::Up, &look.cpu_upper);
-    dot_graph(&painter, lower, system, Grow::Down, &look.cpu_lower);
+    dot_graph(&painter, upper, user, Grow::Up, &look.load);
+    dot_graph(&painter, lower, system, Grow::Down, &look.load2);
     caption(
         &painter,
         look,
         rect.right_top() + vec2(-2.0, 2.0),
         Align2::RIGHT_TOP,
         format!("user {}%", last(user)),
-        look.cpu_upper.at(last(user)),
+        look.load.at(last(user)),
     );
     caption(
         &painter,
@@ -1179,14 +1247,14 @@ fn cpu_graph(ui: &Ui, look: &Look, cpu: &CpuInfo, rect: Rect) {
         rect.right_bottom() + vec2(-2.0, -2.0),
         Align2::RIGHT_BOTTOM,
         format!("system {}%", last(system)),
-        look.cpu_lower.at(last(system)),
+        look.load2.at(last(system)),
     );
 }
 
 fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
     let total = cpu.cpu_percent.total.back().copied();
     let total_text = total.map_or_else(|| "N/A".to_owned(), |v| format!("{v}%"));
-    meter_row(ui, look, "CPU", total, &total_text, &look.cpu_upper);
+    meter_row(ui, look, "CPU", total, &total_text, &look.load);
 
     let scale = if look.cpu_clock_max_mhz > 0 {
         look.cpu_clock_max_mhz as u64
@@ -1204,7 +1272,7 @@ fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
     } else {
         "N/A".to_owned()
     };
-    meter_row(ui, look, "Clock", clock, &clock_text, &look.cpu_upper);
+    meter_row(ui, look, "Clock", clock, &clock_text, &look.clock);
 
     if let Some(t) = cpu
         .temp
@@ -1223,7 +1291,7 @@ fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
                 "Watts",
                 Some((watts / max * 100.0).clamp(0.0, 100.0) as i64),
                 &format!("{watts:.0}/{max:.0}W"),
-                &look.cpu_upper,
+                &look.power,
             ),
             None => meter_row(
                 ui,
@@ -1231,7 +1299,7 @@ fn cpu_stats(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
                 "Watts",
                 None,
                 &format!("{watts:.1}W"),
-                &look.cpu_upper,
+                &look.power,
             ),
         }
     }
@@ -1305,7 +1373,7 @@ fn cores(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
                 Align2::RIGHT_CENTER,
                 format!("{pct}%"),
                 mono(),
-                look.cpu_upper.at(pct),
+                look.load.at(pct),
             );
             right -= 5.0 * cw;
             let graph = Rect::from_min_max(
@@ -1313,13 +1381,7 @@ fn cores(ui: &mut Ui, look: &Look, cpu: &CpuInfo) {
                 pos2(right - cw, line.bottom() - 1.0),
             );
             if graph.width() > DOT {
-                dot_graph(
-                    &ui.painter_at(graph),
-                    graph,
-                    history,
-                    Grow::Up,
-                    &look.cpu_upper,
-                );
+                dot_graph(&ui.painter_at(graph), graph, history, Grow::Up, &look.load);
             }
         }
     }
@@ -1345,7 +1407,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: usize) -> f32
 
     let util = gpu.gpu_percent.utilization.back().copied();
     let util_text = util.map_or_else(|| "N/A".to_owned(), |v| format!("{v}%"));
-    meter_row(ui, look, "GPU", util, &util_text, &look.gpu);
+    meter_row(ui, look, "GPU", util, &util_text, &look.load);
 
     let max_clock = if look.gpu_clock_max_mhz > 0 {
         look.gpu_clock_max_mhz as u64
@@ -1361,7 +1423,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: usize) -> f32
         "Clock",
         clock,
         &mhz(gpu.gpu_clock_speed),
-        &look.gpu_clock,
+        &look.clock,
     );
 
     if let Some(t) = gpu.temp.back().copied().filter(|t| *t > 0) {
@@ -1382,7 +1444,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: usize) -> f32
                 "Watts",
                 Some((gpu.pwr_usage.saturating_mul(100) / max_mw).clamp(0, 100)),
                 &format!("{watts:.0}/{:.0}W", max_mw as f64 / 1000.0),
-                &look.gpu_power,
+                &look.power,
             );
         } else {
             meter_row(
@@ -1391,7 +1453,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: usize) -> f32
                 "Watts",
                 None,
                 &format!("{watts:.0}W"),
-                &look.gpu_power,
+                &look.power,
             );
         }
     }
@@ -1399,7 +1461,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: usize) -> f32
     if let Some(pct) = gpu.mem_used.saturating_mul(100).checked_div(gpu.mem_total) {
         let pct = pct.min(100) as i64;
         let vram = look.pair(gpu.mem_used, gpu.mem_total);
-        meter_row(ui, look, "VRAM", Some(pct), &vram, &look.gpu_vram);
+        meter_row(ui, look, "VRAM", Some(pct), &vram, &look.fill);
     }
 
     // Utilisation history fills whatever height remains.
@@ -1414,7 +1476,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: usize) -> f32
             rect,
             &gpu.gpu_percent.utilization,
             Grow::Up,
-            &look.gpu,
+            &look.load,
         );
         let now = util.unwrap_or(0);
         caption(
@@ -1423,7 +1485,7 @@ fn gpu_panel(ui: &mut Ui, look: &Look, gpus: &[GpuInfo], selected: usize) -> f32
             rect.right_top() + vec2(-2.0, 2.0),
             Align2::RIGHT_TOP,
             format!("util {now}%"),
-            look.gpu.at(now),
+            look.load.at(now),
         );
     }
     fixed
@@ -1448,7 +1510,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
         "Used",
         pct_of(s.used, total),
         &look.bytes(s.used),
-        &look.used,
+        &look.fill,
     );
     meter_row(
         ui,
@@ -1456,7 +1518,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
         "Avail",
         pct_of(s.available, total),
         &look.bytes(s.available),
-        &look.available,
+        &look.mem_avail,
     );
     if s.cached > 0 {
         meter_row(
@@ -1465,7 +1527,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
             "Cache",
             pct_of(s.cached, total),
             &look.bytes(s.cached),
-            &look.cached,
+            &look.mem_cache,
         );
     }
     let commit = if s.commit_limit > 0 {
@@ -1474,7 +1536,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
         "N/A".to_owned()
     };
     let commit_pct = pct_of(s.commit_used, s.commit_limit);
-    meter_row(ui, look, "Commit", commit_pct, &commit, &look.cpu_upper);
+    meter_row(ui, look, "Commit", commit_pct, &commit, &look.fill);
 
     // A positive swap_max_mib shows allocation against a growth ceiling;
     // otherwise usage against current allocation (see README "Swap").
@@ -1487,7 +1549,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
         };
         let capacity = s.swap_total.max(ceiling);
         let text = look.pair(value, capacity);
-        meter_row(ui, look, "Swap", pct_of(value, capacity), &text, &look.used);
+        meter_row(ui, look, "Swap", pct_of(value, capacity), &text, &look.fill);
     }
 
     ui.add_space(6.0);
@@ -1496,7 +1558,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
     if rest.height() >= ROW + 3.0 * DOT && rest.width() > 4.0 * DOT {
         let (rect, _) = ui.allocate_exact_size(rest.size(), Sense::hover());
         let painter = ui.painter_at(rect);
-        dot_graph(&painter, rect, &mem.percent.used, Grow::Up, &look.used);
+        dot_graph(&painter, rect, &mem.percent.used, Grow::Up, &look.fill);
         let now = last(&mem.percent.used);
         caption(
             &painter,
@@ -1504,7 +1566,7 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
             rect.right_top() + vec2(-2.0, 2.0),
             Align2::RIGHT_TOP,
             format!("used {now}%"),
-            look.used.at(now),
+            look.fill.at(now),
         );
     }
     fixed
@@ -1522,7 +1584,7 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
         let label = format!("{} {}", disk.name, disk.fstype);
         let usage = look.pair(disk.used, disk.total);
         let used = i64::from(disk.used_percent.clamp(0, 100));
-        meter_row(ui, look, &label, Some(used), &usage, &look.available);
+        meter_row(ui, look, &label, Some(used), &usage, &look.fill);
 
         let line = row(ui);
         let painter = ui.painter();
@@ -1533,7 +1595,7 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
             Align2::RIGHT_CENTER,
             format!("{busy}%"),
             mono(),
-            look.disk_busy.at(busy),
+            look.load.at(busy),
         );
         painter.text(
             pos2(line.right() - 6.0 * cw, cy),
@@ -1551,13 +1613,13 @@ fn disk_panel(ui: &mut Ui, look: &Look, disks: &[DiskInfo]) {
                 "R",
                 &disk.read_history,
                 disk.read_bytes_per_sec,
-                &look.disk_read,
+                &look.inbound,
             ),
             (
                 "W",
                 &disk.write_history,
                 disk.write_bytes_per_sec,
-                &look.disk_write,
+                &look.outbound,
             ),
         ];
         for (letter, history, current, grad) in streams {
@@ -1670,8 +1732,8 @@ fn net_panel(
         let mid = graph.center().y;
         let upper = Rect::from_min_max(graph.min, pos2(graph.right(), mid - 1.0));
         let lower = Rect::from_min_max(pos2(graph.left(), mid + 1.0), graph.max);
-        dot_graph_scaled(&painter, upper, down, Grow::Up, &look.download, down_max);
-        dot_graph_scaled(&painter, lower, up, Grow::Down, &look.upload, up_max);
+        dot_graph_scaled(&painter, upper, down, Grow::Up, &look.inbound, down_max);
+        dot_graph_scaled(&painter, lower, up, Grow::Down, &look.outbound, up_max);
         let stat_pct = |speed: u64, top: u64| pct_of(speed, top).unwrap_or(0);
         let (d, u) = (&net.stat.download, &net.stat.upload);
         caption(
@@ -1680,7 +1742,7 @@ fn net_panel(
             graph.right_top() + vec2(-2.0, 2.0),
             Align2::RIGHT_TOP,
             format!("{} ▼", look.rate(d.speed)),
-            look.download.at(stat_pct(d.speed, d.top)),
+            look.inbound.at(stat_pct(d.speed, d.top)),
         );
         caption(
             &painter,
@@ -1688,7 +1750,7 @@ fn net_panel(
             graph.right_bottom() + vec2(-2.0, -2.0),
             Align2::RIGHT_BOTTOM,
             format!("{} ▲", look.rate(u.speed)),
-            look.upload.at(stat_pct(u.speed, u.top)),
+            look.outbound.at(stat_pct(u.speed, u.top)),
         );
     }
 
@@ -1734,13 +1796,20 @@ fn ping_row(ui: &mut Ui, look: &Look, status: &StatusbarInfo) {
     let value = status.ping.strip_prefix("ping ").unwrap_or("...");
     // Like the meters: the graph ends one column before the widest value seen.
     let value_chars = meter_value_chars(ui, value) as f32;
+    // Latency is a load: 0 ms takes the start colour, 100 ms and above the end.
+    let value_color = status
+        .ping_history
+        .back()
+        .copied()
+        .flatten()
+        .map_or(look.fg, |ms| look.load.at(ms));
     let painter = ui.painter();
     painter.text(
         line.right_center(),
         Align2::RIGHT_CENTER,
         value,
         mono(),
-        look.fg,
+        value_color,
     );
     let graph = Rect::from_min_max(
         pos2(line.left() + 5.0 * cw, line.top() + 1.0),
@@ -1766,7 +1835,7 @@ fn ping_row(ui: &mut Ui, look: &Look, status: &StatusbarInfo) {
         graph,
         &values,
         Grow::Up,
-        &look.download,
+        &look.load,
         max,
     );
     let pad = cols - (history.len() - skip);
@@ -1904,7 +1973,9 @@ fn ranking_panel(
     let total_mem = sample.mem.stats.used + sample.mem.stats.available;
     let total_vram = sample.gpus.iter().map(|g| g.mem_total).max().unwrap_or(0);
     let cores = sample.cpu.core_count;
-    let ramp = |pct: Option<i64>| pct.map_or(look.dim, |pct| look.cpu_upper.at(pct));
+    // Coloured columns follow the colour roles: usage is load, memory is fill.
+    let load = |pct: Option<i64>| pct.map_or(look.dim, |pct| look.load.at(pct));
+    let fill = |pct: Option<i64>| pct.map_or(look.dim, |pct| look.fill.at(pct));
     let cpu =
         |p: &ProcInfo| crate::domain::process::display_cpu_percent(p.cpu_p, cores, look.per_core);
     let gpu = |p: &ProcInfo| {
@@ -1922,31 +1993,35 @@ fn ranking_panel(
             Ranking::Cpu => {
                 let pct = cpu(p);
                 vec![
-                    (format!("{pct:.1}"), look.cpu_upper.at(pct as i64)),
+                    (format!("{pct:.1}"), look.load.at(pct as i64)),
                     (look.bytes(p.ram), look.dim),
                     (look.bytes(p.mem), look.dim),
                 ]
             }
             Ranking::Mem => vec![
                 (format!("{:.1}", cpu(p)), look.dim),
-                (look.bytes(p.ram), ramp(pct_of(p.ram, total_mem))),
-                (look.bytes(p.mem), ramp(pct_of(p.mem, total_mem))),
+                (look.bytes(p.ram), fill(pct_of(p.ram, total_mem))),
+                (look.bytes(p.mem), fill(pct_of(p.mem, total_mem))),
             ],
             Ranking::Gpu => vec![
-                (gpu(p), ramp(p.gpu_p.map(|v| v as i64))),
+                (gpu(p), load(p.gpu_p.map(|v| v as i64))),
                 (vram(p), look.dim),
             ],
             Ranking::Vram => vec![
                 (gpu(p), look.dim),
-                (vram(p), ramp(p.gpu_mem.and_then(|v| pct_of(v, total_vram)))),
+                (vram(p), fill(p.gpu_mem.and_then(|v| pct_of(v, total_vram)))),
             ],
             Ranking::Io => [IoSort::Read, IoSort::Write, IoSort::Total]
                 .into_iter()
                 .map(|kind| match p.io_rates.map(|r| kind.value(r)) {
                     Some(v) => (
                         look.rate(v),
-                        look.cpu_upper
-                            .at((v.saturating_mul(100) / IO_FULL_SCALE).min(100) as i64),
+                        match kind {
+                            IoSort::Read => &look.inbound,
+                            IoSort::Write => &look.outbound,
+                            IoSort::Total => &look.load,
+                        }
+                        .at((v.saturating_mul(100) / IO_FULL_SCALE).min(100) as i64),
                     ),
                     None => ("N/A".to_owned(), look.label),
                 })
@@ -2258,9 +2333,13 @@ impl TabViewer for Panels<'_> {
 
 /// Load `rztop.toml` read-only and start the file logger. A GUI build has
 /// no console, so config warnings and panics go to `rztop.log`.
+fn config_path() -> std::path::PathBuf {
+    crate::tools::config_dir().join("rztop.toml")
+}
+
 fn load_config() -> Config {
     let mut config = Config::new();
-    let path = crate::tools::config_dir().join("rztop.toml");
+    let path = config_path();
     let warnings = if path.exists() {
         config.load(&path)
     } else {
@@ -2326,7 +2405,7 @@ fn app_icon(look: &Look) -> egui::IconData {
                     let cy = SIZE as f32 - margin - (row as f32 + 0.5) * STEP;
                     let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - RADIUS;
                     if dist < 1.0 {
-                        let color = look.cpu_upper.at(((row + 1) * 100 / ROWS) as i64);
+                        let color = look.load.at(((row + 1) * 100 / ROWS) as i64);
                         c = over(c, color, cover(dist));
                     }
                 }
@@ -2339,6 +2418,21 @@ fn app_icon(look: &Look) -> egui::IconData {
         width: SIZE as u32,
         height: SIZE as u32,
     }
+}
+
+/// egui's own colours (panels, windows, widgets) from the theme.
+fn apply_style(ctx: &egui::Context, look: &Look) {
+    ctx.style_mut(|s| {
+        s.visuals.panel_fill = look.bg;
+        s.visuals.window_fill = look.bg;
+        s.visuals.window_stroke.color = look.dim;
+        s.visuals.extreme_bg_color = mix(look.bg, Color32::BLACK, 0.3);
+        s.visuals.faint_bg_color = mix(look.bg, look.fg, 0.04);
+        s.visuals.selection.bg_fill = look.selected;
+        s.visuals.widgets.noninteractive.bg_stroke.color = look.dim;
+        s.visuals.override_text_color = Some(look.fg);
+        s.spacing.item_spacing = egui::vec2(4.0, 2.0);
+    });
 }
 
 pub fn run_desktop() -> eframe::Result {
@@ -2367,16 +2461,7 @@ pub fn run_desktop() -> eframe::Result {
         "rztop",
         options,
         Box::new(move |cc| {
-            cc.egui_ctx.style_mut(|s| {
-                s.visuals.panel_fill = look.bg;
-                s.visuals.window_fill = look.bg;
-                s.visuals.extreme_bg_color = mix(look.bg, Color32::BLACK, 0.3);
-                s.visuals.faint_bg_color = mix(look.bg, look.fg, 0.04);
-                s.visuals.selection.bg_fill = look.selected;
-                s.visuals.widgets.noninteractive.bg_stroke.color = look.dim;
-                s.visuals.override_text_color = Some(look.fg);
-                s.spacing.item_spacing = egui::vec2(4.0, 2.0);
-            });
+            apply_style(&cc.egui_ctx, &look);
             let last = cc
                 .storage
                 .and_then(|storage| eframe::get_value(storage, LAYOUT));
@@ -2398,6 +2483,11 @@ pub fn run_desktop() -> eframe::Result {
                 fitting,
                 dragged: None,
                 look,
+                config,
+                config_path: config_path(),
+                settings: settings::Settings::default(),
+                config_dirty: false,
+                config_saved: None,
             }))
         }),
     )

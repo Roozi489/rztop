@@ -260,6 +260,21 @@ pub fn init(log_dir: &Path, filter: LevelFilter) -> Result<(), InitError> {
     Ok(())
 }
 
+/// Change the log level at runtime. If logging started switched off, the
+/// subscriber is installed now (truncating `rztop.log`).
+pub fn set_level(filter: LevelFilter) {
+    if let Some(handle) = RELOAD_HANDLE.get() {
+        if let Err(e) = handle.reload(filter) {
+            tracing::error!(subsystem = %Subsystem::Logger, error = %e, "log level change failed");
+        }
+    } else if filter != LevelFilter::OFF
+        && let Some(dir) = LOG_DIR.get()
+        && let Err(e) = install_subscriber(dir, filter)
+    {
+        eprintln!("rztop: logging could not start: {e}");
+    }
+}
+
 /// Read the OS version via `RtlGetVersion` and format as `MAJOR.MINOR.BUILD`
 /// (e.g. `10.0.26100`). The build number maps unambiguously to a marketing
 /// label via Microsoft's release-health table.

@@ -37,9 +37,11 @@ began on 2026-11-02; modified files are marked with a `Modified for rztop` heade
 
 - **Dockable layout**: drag a panel's caption onto another panel to split it or group the two as tabs; drag separators to resize.
 - **Layout controls** in the status bar: **save** stores the current arrangement and window position, **load** restores it, **reset** returns to the default arrangement sized to fit the window.
-- **Status bar**: refresh interval (click `-` / `+`), rztop's own CPU usage, uptime, clock, and a warning when rztop is not elevated and some data is unavailable.
-- **41 bundled themes** shared with rtop.
-- Sizes are labelled MB and GB like Task Manager (1024-based; `base_10_sizes = true` switches to 1000-based).
+- **Status bar**: settings, refresh interval (click `-` / `+`), rztop's own CPU usage, uptime, clock, and a warning when rztop is not elevated and some data is unavailable.
+- **Settings window** (`[settings]` in the status bar): theme, units and clock; refresh interval and meter scales; network adapter and graph scaling; disk filter; log level. Changes apply immediately and are saved to `rztop.toml`.
+- **43 bundled themes** shared with rtop, picked from thumbnails that show each theme's colours.
+- **Consistent colours**: a metric is coloured by what it measures, whichever panel shows it. Usage, temperature, power, clocks, how full something is, and incoming / outgoing data each have their own gradient from the theme.
+- Sizes are labelled MB and GB like Task Manager (1024-based; 1000-based is a setting).
 
 ## Installation
 
@@ -83,7 +85,9 @@ If a vendor's driver is not installed, that backend is skipped.
 
 ## Configuration
 
-rztop reads an optional config file and never writes it:
+The Settings window edits the config file. Saving rewrites only the lines of the
+keys listed below, so other keys and comments stay. A comment on the same line
+as one of those keys is dropped. The `-` / `+` refresh buttons are saved too.
 
 | What | Where |
 |------|-------|
@@ -92,10 +96,10 @@ rztop reads an optional config file and never writes it:
 | Window and layout | `%APPDATA%\rztop\data\app.ron` |
 
 An rtop `rtop.toml` can be copied over; keys the desktop app does not use are
-ignored. The keys it reads:
+ignored. The keys it reads (Settings edits all of them except `memory_sort_ram` and `io_sort`):
 
 ```toml
-color_theme = "default"        # any bundled theme, e.g. "dracula", "nord", "tokyo-night"
+color_theme = "default"        # any bundled theme, e.g. "dracula", "nord", "tokyo_night"
 update_ms = 2000               # refresh interval, 100..86400000
 base_10_sizes = false
 temp_scale = "celsius"         # celsius, fahrenheit, kelvin, rankine
@@ -109,7 +113,7 @@ gpu_power_max_watts = 0        # e.g. your card's board power rating
 swap_max_mib = 0               # 0 = current pagefile allocation
 
 # Network
-net_iface = ""                 # adapter to show first
+net_iface = "auto"             # adapter to show first; "auto" = first available
 net_auto = true                # auto-scale the graphs
 net_sync = false               # same scale for download and upload
 net_download = 100             # fixed scale when not auto-scaling, in KiB/s

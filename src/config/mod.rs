@@ -22,6 +22,123 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+/// Keys the desktop Settings window edits, and so the only keys
+/// [`Config::save`] writes.
+pub const SETTINGS_KEYS: &[&str] = &[
+    "color_theme",
+    "temp_scale",
+    "base_10_sizes",
+    "statusbar_clock_format",
+    "update_ms",
+    "cpu_clock_max_mhz",
+    "gpu_clock_max_mhz",
+    "gpu_power_max_watts",
+    "swap_max_mib",
+    "proc_per_core",
+    "net_iface",
+    "net_auto",
+    "net_sync",
+    "net_download",
+    "net_upload",
+    "disk_filter",
+    "log_level",
+];
+
+/// Replace the `key = value` lines of `keys` in a flat TOML document with
+/// the values from `table`, keeping every other line. A multi-line array
+/// value is replaced whole. Keys not yet in the document are added before
+/// its first table header, or at the end.
+fn update_keys(existing: &str, table: &toml::Table, keys: &[&str]) -> String {
+    let line_for = |key: &str| {
+        table
+            .get(key)
+            .map(|value| format!("{key} = {}", value_text(value)))
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut written: Vec<&str> = Vec::new();
+    let mut header_at = None;
+    let mut lines = existing.lines();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim_start();
+        if header_at.is_none() && trimmed.starts_with('[') {
+            header_at = Some(out.len());
+        }
+        let key = header_at
+            .is_none()
+            .then(|| top_level_key(trimmed))
+            .flatten()
+            .and_then(|k| keys.iter().copied().find(|&name| name == k));
+        let Some(key) = key else {
+            out.push(line.to_owned());
+            continue;
+        };
+        // Skip the rest of a value that spans several lines.
+        let value = trimmed.split_once('=').map_or("", |(_, v)| v);
+        let mut depth = bracket_depth(value);
+        while depth > 0 {
+            match lines.next() {
+                Some(next) => depth += bracket_depth(next),
+                None => break,
+            }
+        }
+        if !written.contains(&key)
+            && let Some(new) = line_for(key)
+        {
+            out.push(new);
+            written.push(key);
+        }
+    }
+    let missing: Vec<String> = keys
+        .iter()
+        .filter(|k| !written.contains(k))
+        .filter_map(|k| line_for(k))
+        .collect();
+    let at = header_at.unwrap_or(out.len());
+    out.splice(at..at, missing);
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
+/// The bare key of a `key = value` line, if the line is one.
+fn top_level_key(line: &str) -> Option<&str> {
+    let (key, _) = line.split_once('=')?;
+    let key = key.trim();
+    (!key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    .then_some(key)
+}
+
+/// Net `[` minus `]` outside strings, to find where an array value ends.
+fn bracket_depth(text: &str) -> i32 {
+    let mut depth = 0;
+    let mut quote = None;
+    for c in text.chars() {
+        match (quote, c) {
+            (None, '#') => break,
+            (None, '"' | '\'') => quote = Some(c),
+            (Some(q), _) if c == q => quote = None,
+            (None, '[') => depth += 1,
+            (None, ']') => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
+
+/// Inline TOML for one value.
+fn value_text(value: &toml::Value) -> String {
+    match value {
+        toml::Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(value_text).collect();
+            format!("[{}]", items.join(", "))
+        }
+        other => other.to_string(),
+    }
+}
+
 /// All persisted configuration state for rztop.
 ///
 /// Composed of per-subsystem sections (see [`sections`]) flattened
@@ -87,6 +204,27 @@ impl Config {
 
         warnings.append(&mut self.validate());
         warnings
+    }
+
+    /// Save the keys the desktop Settings window edits ([`SETTINGS_KEYS`])
+    /// into the TOML file at `path`, creating it if needed. Only those
+    /// keys' lines are rewritten: comments, other keys and their order are
+    /// kept, and keys missing from the file are appended.
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let table = toml::Table::try_from(self).map_err(std::io::Error::other)?;
+        let existing = match fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e),
+        };
+        let updated = update_keys(&existing, &table, SETTINGS_KEYS);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // Write a sibling file first so a failed write cannot truncate the config.
+        let temp = path.with_extension("toml.tmp");
+        fs::write(&temp, updated)?;
+        fs::rename(&temp, path)
     }
 
     /// Write config to a TOML file.

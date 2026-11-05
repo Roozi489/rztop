@@ -372,3 +372,35 @@ fn gpu_update_ms_round_trips_through_field() {
     assert_eq!(IntKey::GpuUpdateMs.get(&config), 1234);
     assert_eq!(config.refresh.gpu_update_ms, 1234);
 }
+
+#[test]
+fn save_rewrites_only_settings_keys_and_keeps_the_rest() {
+    let dir = std::env::temp_dir().join(format!("rztop-save-{}", std::process::id()));
+    let path = dir.join("rztop.toml");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        &path,
+        "# my settings\nvim_keys = true\ncolor_theme = \"nord\" # old\n\
+         disk_filter = [\n  \"C:\",\n  \"D:\",\n]\nupdate_ms = 1000\n",
+    )
+    .unwrap();
+    let mut config = Config::new();
+    config.load(&path);
+    config.ui.color_theme = "dracula".to_owned();
+    config.refresh.update_ms = 2500;
+    config.disk.disk_filter = vec!["!E:".to_owned()];
+    config.save(&path).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(text.starts_with("# my settings\nvim_keys = true\n"));
+    assert!(text.contains("color_theme = \"dracula\"\n"));
+    assert!(text.contains("disk_filter = [\"!E:\"]\nupdate_ms = 2500\n"));
+    assert!(!text.contains("\"D:\""));
+    // Keys the file did not have are appended once.
+    assert_eq!(text.matches("temp_scale = \"celsius\"").count(), 1);
+    assert!(text.contains("log_level = \"warn\""));
+    let reloaded: Config = toml::from_str(&text).unwrap();
+    assert!(reloaded.ui.vim_keys);
+    assert_eq!(reloaded.refresh.update_ms, 2500);
+}
