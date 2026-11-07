@@ -6,13 +6,18 @@
 //! be found); the remaining themes are emitted in case-insensitive
 //! alphabetical order.
 //!
-//! Re-runs only when the contents of `themes/` change.
+//! It also compiles `assets/rztop.rc` with the Windows SDK's `rc.exe` and
+//! links the result, so `rztop.exe` carries its icon in Explorer.
+//!
+//! Re-runs only when `themes/` or `assets/` change.
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
+    embed_resources();
     let themes_dir = PathBuf::from("themes");
     println!("cargo:rerun-if-changed=themes");
 
@@ -66,4 +71,67 @@ fn main() {
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR is set by cargo");
     let dest = PathBuf::from(out_dir).join("bundled_themes.rs");
     fs::write(&dest, src).expect("write generated bundled_themes.rs");
+}
+
+/// Compile `assets/rztop.rc` (the exe icon) and link it into the binaries.
+/// A missing SDK only costs the icon, so it warns rather than fails.
+fn embed_resources() {
+    println!("cargo:rerun-if-changed=assets/rztop.rc");
+    println!("cargo:rerun-if-changed=assets/rztop.ico");
+    println!("cargo:rerun-if-env-changed=RC");
+    let target = |key: &str| env::var(key).unwrap_or_default();
+    if target("CARGO_CFG_TARGET_OS") != "windows" || target("CARGO_CFG_TARGET_ENV") != "msvc" {
+        return;
+    }
+    let Some(rc) = find_rc() else {
+        println!("cargo:warning=rc.exe not found (Windows SDK); rztop.exe will have no icon");
+        return;
+    };
+    let assets = Path::new(&env::var("CARGO_MANIFEST_DIR").expect("set by cargo")).join("assets");
+    let res = PathBuf::from(env::var("OUT_DIR").expect("set by cargo")).join("rztop.res");
+    let status = Command::new(&rc)
+        .arg("/nologo")
+        .arg("/i")
+        .arg(&assets)
+        .arg("/fo")
+        .arg(&res)
+        .arg(assets.join("rztop.rc"))
+        .status();
+    match status {
+        Ok(s) if s.success() => println!("cargo:rustc-link-arg-bins={}", res.display()),
+        Ok(s) => println!("cargo:warning=rc.exe failed ({s}); rztop.exe will have no icon"),
+        Err(e) => println!("cargo:warning=could not run rc.exe ({e}); rztop.exe will have no icon"),
+    }
+}
+
+/// `rc.exe` from `$RC`, else the newest Windows 10/11 SDK.
+fn find_rc() -> Option<PathBuf> {
+    if let Ok(rc) = env::var("RC") {
+        return Some(rc.into());
+    }
+    let program_files =
+        env::var("ProgramFiles(x86)").unwrap_or_else(|_| r"C:\Program Files (x86)".to_owned());
+    let bin = Path::new(&program_files).join(r"Windows Kits\10\bin");
+    let host = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let mut versions: Vec<PathBuf> = fs::read_dir(&bin)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.join(host).join("rc.exe").is_file())
+        .collect();
+    // Version folders such as 10.0.26100.0 sort numerically part by part.
+    versions.sort_by_key(|p| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| {
+                n.split('.')
+                    .map(|v| v.parse::<u32>().unwrap_or(0))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    Some(versions.pop()?.join(host).join("rc.exe"))
 }

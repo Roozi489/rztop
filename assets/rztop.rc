@@ -1,0 +1,3 @@
+// Resources linked into rztop.exe by build.rs. Regenerate the icon with
+// `cargo test -- --ignored write_exe_icon`.
+1 ICON "rztop.ico"

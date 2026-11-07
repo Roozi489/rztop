@@ -15,28 +15,28 @@ const PAD: f32 = 8.0;
 const STRIP_H: f32 = 7.0;
 const ROW_H: f32 = 12.0;
 
-/// Every bundled theme's colours, built the first time the grid is shown.
+/// Every theme's colours, built the first time the grid is shown and
+/// again after a user theme is saved or deleted.
 #[derive(Default)]
 pub(super) struct ThemeGrid {
-    looks: Vec<(&'static str, Look)>,
+    looks: Vec<(String, Look)>,
 }
 
 impl ThemeGrid {
+    /// Rebuild the thumbnails next time, to pick up user theme changes.
+    pub(super) fn refresh(&mut self) {
+        self.looks.clear();
+    }
+
     /// Draw the thumbnails, wrapping to the available width. Returns the
     /// theme the user clicked.
-    pub(super) fn show(
-        &mut self,
-        ui: &mut Ui,
-        config: &Config,
-        current: &str,
-    ) -> Option<&'static str> {
+    pub(super) fn show(&mut self, ui: &mut Ui, config: &Config, current: &str) -> Option<String> {
         if self.looks.is_empty() {
-            let mut config = config.clone();
-            self.looks = crate::theme::THEME_NAMES
-                .iter()
-                .map(|&name| {
-                    config.ui.color_theme = name.to_owned();
-                    (name, Look::new(&config))
+            self.looks = crate::theme::names()
+                .into_iter()
+                .map(|name| {
+                    let look = Look::with_palette(config, &crate::theme::palette(&name));
+                    (name, look)
                 })
                 .collect();
         }
@@ -47,7 +47,7 @@ impl ThemeGrid {
                 for (name, look) in &self.looks {
                     let selected = name.eq_ignore_ascii_case(current);
                     if thumbnail(ui, name, look, selected).clicked() {
-                        picked = Some(*name);
+                        picked = Some(name.clone());
                     }
                 }
             });
@@ -81,7 +81,7 @@ fn thumbnail(ui: &mut Ui, name: &str, look: &Look, selected: bool) -> egui::Resp
     let small = FontId::monospace(10.0);
     painter.rect_filled(rect, CornerRadius::same(4), look.bg);
 
-    // Title row, like a panel caption.
+    // Title row, like a panel caption; the user's own themes are tagged.
     painter.text(
         rect.left_top() + vec2(PAD, 5.0),
         Align2::LEFT_TOP,
@@ -89,6 +89,15 @@ fn thumbnail(ui: &mut Ui, name: &str, look: &Look, selected: bool) -> egui::Resp
         FontId::monospace(11.5),
         look.fg,
     );
+    if !crate::theme::is_bundled(name) {
+        painter.text(
+            rect.right_top() + vec2(-PAD, 6.0),
+            Align2::RIGHT_TOP,
+            "custom",
+            small.clone(),
+            look.label,
+        );
+    }
 
     // Two columns of role strips.
     let top = rect.top() + 22.0;

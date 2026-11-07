@@ -3,7 +3,7 @@
 //! Each theme is a TOML file parsed into a [`ThemePalette`] via serde.
 //! Bundled themes are embedded with `include_str!()` and parsed at startup.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// An RGB color parsed from a `"#RRGGBB"` hex string.
@@ -21,6 +21,12 @@ impl<'de> Deserialize<'de> for Rgb {
                 "invalid hex color '{s}': expected \"#RRGGBB\" format"
             ))
         })
+    }
+}
+
+impl Serialize for Rgb {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 
@@ -45,7 +51,7 @@ impl Rgb {
 }
 
 /// Three-stop gradient definition (start → mid → end).
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct GradientDef {
     pub start: Rgb,
     pub mid: Rgb,
@@ -56,18 +62,14 @@ pub struct GradientDef {
 ///
 /// Every field is required. Parsed from TOML via serde — a missing or
 /// invalid field produces a deserialization error.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThemePalette {
     pub colors: PaletteColors,
     pub gradients: PaletteGradients,
 }
 
 /// Direct color values for a theme.
-#[derive(Debug, Clone, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "themes declare terminal-era colours the GUI does not use"
-)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaletteColors {
     pub main_bg: Rgb,
     pub main_fg: Rgb,
@@ -120,11 +122,9 @@ pub struct PaletteColors {
 }
 
 /// Gradient definitions for a theme.
-#[derive(Debug, Clone, Deserialize)]
-#[expect(
-    dead_code,
-    reason = "themes declare terminal-era colours the GUI does not use"
-)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Terminal-era colours the GUI does not show are kept so a saved theme stays
+/// a complete rtop theme.
 pub struct PaletteGradients {
     pub cpu_upper: GradientDef,
     pub cpu_lower: GradientDef,

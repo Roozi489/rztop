@@ -40,6 +40,7 @@ began on 2026-11-02; modified files are marked with a `Modified for rztop` heade
 - **Status bar**: settings, refresh interval (click `-` / `+`), rztop's own CPU usage, uptime, clock, and a warning when rztop is not elevated and some data is unavailable.
 - **Settings window** (`[settings]` in the status bar): theme, units and clock; refresh interval and meter scales; network adapter and graph scaling; disk filter; log level. Changes apply immediately and are saved to `rztop.toml`.
 - **43 bundled themes** shared with rtop, picked from thumbnails that show each theme's colours.
+- **Theme editor**: customize a theme's base colours and the start, middle and end of each colour role while the whole app previews it. Saved themes go to `%APPDATA%\rztop\themes\` in rtop's theme format, so rtop can load them too.
 - **Consistent colours**: a metric is coloured by what it measures, whichever panel shows it. Usage, temperature, power, clocks, how full something is, and incoming / outgoing data each have their own gradient from the theme.
 - Sizes are labelled MB and GB like Task Manager (1024-based; 1000-based is a setting).
 
@@ -94,6 +95,7 @@ as one of those keys is dropped. The `-` / `+` refresh buttons are saved too.
 | Config | `%APPDATA%\rztop\rztop.toml` (or `$XDG_CONFIG_HOME\rztop\`) |
 | Log | `%LOCALAPPDATA%\rztop\rztop.log` (or `$XDG_STATE_HOME\rztop\`) |
 | Window and layout | `%APPDATA%\rztop\data\app.ron` |
+| Your themes | `%APPDATA%\rztop\themes\<name>.toml` |
 
 An rtop `rtop.toml` can be copied over; keys the desktop app does not use are
 ignored. The keys it reads (Settings edits all of them except `memory_sort_ram` and `io_sort`):

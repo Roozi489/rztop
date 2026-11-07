@@ -1,6 +1,7 @@
 //! Settings window. Edits the shared [`Config`]; the caller applies what
 //! changed and saves the editable keys to `rztop.toml`.
 
+use super::theme_editor::{Action, ThemeEditor};
 use super::theme_picker::ThemeGrid;
 use super::{Look, adapter_name, text};
 use crate::config::Config;
@@ -48,6 +49,9 @@ pub(super) struct Changes {
     pub(super) interval: bool,
     pub(super) net: bool,
     pub(super) log: bool,
+    /// The theme editor's preview started, changed or ended: rebuild the
+    /// look from [`Settings::preview`] and restyle.
+    pub(super) preview: bool,
 }
 
 /// Facts the window shows but does not edit.
@@ -68,9 +72,40 @@ pub(super) struct Settings {
     /// The disk filter as typed, kept while editing so invalid or partial
     /// entries are not wiped out mid-word.
     disk_filter: Option<String>,
+    editor: Option<ThemeEditor>,
+    /// The app is showing the editor's colours instead of the saved theme.
+    previewing: bool,
 }
 
 impl Settings {
+    /// The colours the app should show instead of the configured theme.
+    pub(super) fn preview(&self) -> Option<&crate::themes::ThemePalette> {
+        self.editor
+            .as_ref()
+            .filter(|_| self.previewing)
+            .map(|e| &e.palette)
+    }
+
+    /// End the edit: the app returns to the configured theme, and the
+    /// thumbnails pick up a saved or deleted user theme.
+    fn close_editor(&mut self, ch: &mut Changes) {
+        self.editor = None;
+        self.themes.refresh();
+        self.previewing = false;
+        ch.preview = true;
+        ch.look = true;
+        ch.theme = true;
+    }
+
+    /// Preview the draft exactly while the editor is visible.
+    fn sync_preview(&mut self, ch: &mut Changes) {
+        let on = self.open && self.section == Section::Appearance && self.editor.is_some();
+        if on != self.previewing {
+            self.previewing = on;
+            ch.preview = true;
+        }
+    }
+
     pub(super) fn toggle(&mut self) {
         self.open = !self.open;
         self.disk_filter = None;
@@ -84,11 +119,13 @@ impl Settings {
         info: &Context,
     ) -> Changes {
         let mut changes = Changes::default();
-        if !self.open {
-            return changes;
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if self.open && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.open = false;
+        }
+        // A draft survives closing the window or switching section, but the
+        // app only shows its colours while the editor is on screen.
+        self.sync_preview(&mut changes);
+        if !self.open {
             return changes;
         }
         let screen = ctx.screen_rect();
@@ -145,17 +182,56 @@ impl Settings {
                     });
             });
         self.open = open;
+        self.sync_preview(&mut changes);
         changes.any |= changes.look || changes.interval || changes.net || changes.log;
         changes
     }
 
     fn appearance(&mut self, ui: &mut Ui, config: &mut Config, look: &Look, ch: &mut Changes) {
-        heading(ui, look, "Theme");
+        if let Some(editor) = &mut self.editor {
+            heading(ui, look, "Theme editor");
+            match editor.show(ui, look) {
+                Action::None => {}
+                Action::Changed => ch.preview = true,
+                Action::Save => match crate::theme::save_user(&editor.name, &editor.palette) {
+                    Ok(()) => {
+                        config.ui.color_theme = editor.name.clone();
+                        self.close_editor(ch);
+                    }
+                    Err(e) => editor.error = Some(format!("Could not save: {e}")),
+                },
+                Action::Cancel => self.close_editor(ch),
+                Action::Delete => match crate::theme::delete_user(&editor.name) {
+                    Ok(()) => {
+                        if config.ui.color_theme.eq_ignore_ascii_case(&editor.name) {
+                            config.ui.color_theme = "default".to_owned();
+                        }
+                        self.close_editor(ch);
+                    }
+                    Err(e) => editor.error = Some(format!("Could not delete: {e}")),
+                },
+            }
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            heading(ui, look, "Theme");
+            ui.add_space(12.0);
+            let current = &config.ui.color_theme;
+            let label = if crate::theme::is_bundled(current) {
+                format!("Customize {current}…")
+            } else {
+                format!("Edit {current}…")
+            };
+            if ui.button(label).clicked() {
+                self.editor = Some(ThemeEditor::new(current));
+            }
+        });
         let current = config.ui.color_theme.clone();
         if let Some(name) = self.themes.show(ui, config, &current)
             && !name.eq_ignore_ascii_case(&current)
         {
-            config.ui.color_theme = name.to_owned();
+            config.ui.color_theme = name;
             ch.look = true;
             ch.theme = true;
         }

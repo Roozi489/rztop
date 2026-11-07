@@ -40,6 +40,7 @@ use std::{
 };
 
 mod settings;
+mod theme_editor;
 mod theme_picker;
 
 /// Bumped whenever panels are added, so an older saved arrangement
@@ -285,7 +286,12 @@ struct Look {
 
 impl Look {
     fn new(config: &Config) -> Self {
-        let palette = crate::theme::palette(&config.ui.color_theme);
+        Self::with_palette(config, &crate::theme::palette(&config.ui.color_theme))
+    }
+
+    /// The config's scales and units with `palette`'s colours, for previewing
+    /// a theme that is not saved yet.
+    fn with_palette(config: &Config, palette: &crate::themes::ThemePalette) -> Self {
         let (c, g) = (&palette.colors, &palette.gradients);
         let bg = rgb(c.main_bg);
         Self {
@@ -794,10 +800,14 @@ impl Desktop {
             saved: self.config_saved.as_ref(),
         };
         let changes = self.settings.show(ctx, &mut self.config, &self.look, &info);
-        if changes.look {
-            self.look = Look::new(&self.config);
+        if changes.look || changes.preview {
+            // The theme editor's draft wins over the configured theme while shown.
+            self.look = match self.settings.preview() {
+                Some(palette) => Look::with_palette(&self.config, palette),
+                None => Look::new(&self.config),
+            };
         }
-        if changes.theme {
+        if changes.theme || changes.preview {
             apply_style(ctx, &self.look);
             ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(app_icon(
                 &self.look,
@@ -2364,11 +2374,23 @@ fn load_config() -> Config {
 /// Cores mini graphs, like a tiny CPU history.
 fn app_icon(look: &Look) -> egui::IconData {
     const SIZE: usize = 64;
+    egui::IconData {
+        rgba: icon_rgba(look, SIZE),
+        width: SIZE as u32,
+        height: SIZE as u32,
+    }
+}
+
+/// The icon as `size`×`size` RGBA pixels. The design is laid out on a
+/// 64-pixel grid and scaled, so every size shows the same picture.
+fn icon_rgba(look: &Look, size: usize) -> Vec<u8> {
     const HEIGHTS: [usize; 6] = [2, 4, 3, 6, 4, 5];
     const ROWS: usize = 6;
-    const STEP: f32 = 9.0;
-    const RADIUS: f32 = 3.1;
-    let margin = (SIZE as f32 - STEP * HEIGHTS.len() as f32) / 2.0;
+    let s = size as f32 / 64.0;
+    let (step, radius, corner) = (9.0 * s, 3.1 * s, 12.0 * s);
+    // The faint border stays at least one pixel wide on small icons.
+    let border = (1.5 * s).max(1.0);
+    let margin = (size as f32 - step * HEIGHTS.len() as f32) / 2.0;
     // Coverage of a signed distance (negative inside), antialiased over a pixel.
     let cover = |d: f32| (0.5 - d).clamp(0.0, 1.0);
     let over = |dst: [f32; 4], src: Color32, a: f32| {
@@ -2385,25 +2407,25 @@ fn app_icon(look: &Look) -> egui::IconData {
         out[3] = out_a;
         out
     };
-    let mut rgba = Vec::with_capacity(SIZE * SIZE * 4);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
+    let mut rgba = Vec::with_capacity(size * size * 4);
+    for y in 0..size {
+        for x in 0..size {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             // Rounded-square background with a faint border.
-            let half = SIZE as f32 / 2.0;
+            let half = size as f32 / 2.0;
             let (qx, qy) = (
-                (px - half).abs() - (half - 12.0),
-                (py - half).abs() - (half - 12.0),
+                (px - half).abs() - (half - corner),
+                (py - half).abs() - (half - corner),
             );
             let outside = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt();
-            let d = outside + qx.max(qy).min(0.0) - 12.0;
+            let d = outside + qx.max(qy).min(0.0) - corner;
             let mut c = over([0.0; 4], look.dim, cover(d));
-            c = over(c, look.bg, cover(d + 1.5));
+            c = over(c, look.bg, cover(d + border));
             for (col, &height) in HEIGHTS.iter().enumerate() {
                 for row in 0..height {
-                    let cx = margin + (col as f32 + 0.5) * STEP;
-                    let cy = SIZE as f32 - margin - (row as f32 + 0.5) * STEP;
-                    let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - RADIUS;
+                    let cx = margin + (col as f32 + 0.5) * step;
+                    let cy = size as f32 - margin - (row as f32 + 0.5) * step;
+                    let dist = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - radius;
                     if dist < 1.0 {
                         let color = look.load.at(((row + 1) * 100 / ROWS) as i64);
                         c = over(c, color, cover(dist));
@@ -2413,11 +2435,7 @@ fn app_icon(look: &Look) -> egui::IconData {
             rgba.extend(c.map(|v| (v * 255.0).round() as u8));
         }
     }
-    egui::IconData {
-        rgba,
-        width: SIZE as u32,
-        height: SIZE as u32,
-    }
+    rgba
 }
 
 /// egui's own colours (panels, windows, widgets) from the theme.
@@ -2746,5 +2764,78 @@ mod tests {
         let io = rect(&dock, Panel::Io);
         let cpu = rect(&dock, Panel::Cpu);
         assert!((io.top() - cpu.top()).abs() < 2.0 && io.left() >= cpu.right() - 2.0);
+    }
+
+    /// A Windows `.ico` file holding each `(size, rgba)` image as a
+    /// 32-bit bitmap with alpha.
+    fn ico_bytes(images: &[(usize, Vec<u8>)]) -> Vec<u8> {
+        let mut head = Vec::new();
+        let mut body = Vec::new();
+        head.extend(0u16.to_le_bytes());
+        head.extend(1u16.to_le_bytes()); // icon
+        head.extend((images.len() as u16).to_le_bytes());
+        let mut offset = 6 + 16 * images.len();
+        for (size, rgba) in images {
+            let mask_row = size.div_ceil(32) * 4;
+            let mut dib = Vec::new();
+            for v in [40, *size as u32, 2 * *size as u32] {
+                dib.extend(v.to_le_bytes());
+            }
+            dib.extend(1u16.to_le_bytes()); // planes
+            dib.extend(32u16.to_le_bytes()); // bits per pixel
+            dib.extend([0u8; 24]); // no compression; sizes and palette unused
+            // Rows bottom-up, BGRA; then an all-clear AND mask (alpha decides).
+            for row in rgba.chunks(size * 4).rev() {
+                for px in row.chunks(4) {
+                    dib.extend([px[2], px[1], px[0], px[3]]);
+                }
+            }
+            dib.extend(vec![0u8; mask_row * size]);
+            let dim = if *size >= 256 { 0 } else { *size as u8 };
+            head.extend([dim, dim, 0, 0]);
+            head.extend(1u16.to_le_bytes());
+            head.extend(32u16.to_le_bytes());
+            head.extend((dib.len() as u32).to_le_bytes());
+            head.extend((offset as u32).to_le_bytes());
+            offset += dib.len();
+            body.extend(dib);
+        }
+        head.extend(body);
+        head
+    }
+
+    #[test]
+    fn icon_renders_every_size_and_ico_indexes_them() {
+        let look = Look::new(&Config::new());
+        let images: Vec<(usize, Vec<u8>)> = [16, 32, 256]
+            .into_iter()
+            .map(|s| (s, icon_rgba(&look, s)))
+            .collect();
+        for (size, rgba) in &images {
+            assert_eq!(rgba.len(), size * size * 4);
+        }
+        let ico = ico_bytes(&images);
+        assert_eq!(&ico[0..6], &[0, 0, 1, 0, 3, 0]);
+        // Third entry: 256 is written as 0; its data ends the file.
+        let entry = &ico[6 + 32..6 + 48];
+        assert_eq!(entry[0], 0);
+        let len = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
+        let at = u32::from_le_bytes(entry[12..16].try_into().unwrap()) as usize;
+        assert_eq!(at + len, ico.len());
+    }
+
+    /// Regenerates `assets/rztop.ico`, the exe icon, from the default
+    /// theme: `cargo test -- --ignored write_exe_icon`.
+    #[test]
+    #[ignore = "writes assets/rztop.ico"]
+    fn write_exe_icon() {
+        let look = Look::new(&Config::new());
+        let images: Vec<(usize, Vec<u8>)> = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+            .into_iter()
+            .map(|s| (s, icon_rgba(&look, s)))
+            .collect();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/rztop.ico");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, ico_bytes(&images)).unwrap();
     }
 }

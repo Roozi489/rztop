@@ -1,5 +1,7 @@
 // Modified for rztop on 2026-11-04: kept only the bundled theme palettes; the ANSI terminal theme was removed with the terminal frontend.
+// Modified for rztop on 2026-11-07: user themes from the theme editor, saved beside the config.
 use crate::themes::ThemePalette;
+use std::path::PathBuf;
 
 struct BundledTheme {
     name: &'static str,
@@ -8,13 +10,15 @@ struct BundledTheme {
 
 include!(concat!(env!("OUT_DIR"), "/bundled_themes.rs"));
 
-/// Parse a bundled theme's palette by name, falling back to the default
-/// theme when the name is unknown or its palette does not parse.
+/// Parse a theme's palette by name: a bundled theme, else a user theme
+/// from [`user_dir`]. Falls back to the default theme when the name is
+/// unknown or its palette does not parse.
 pub fn palette(name: &str) -> ThemePalette {
     BUNDLED_THEMES
         .iter()
         .find(|t| t.name.eq_ignore_ascii_case(name))
         .and_then(|t| toml::from_str(t.content).ok())
+        .or_else(|| user_palette(name))
         .unwrap_or_else(|| {
             let default = BUNDLED_THEMES
                 .first()
@@ -22,6 +26,87 @@ pub fn palette(name: &str) -> ThemePalette {
                 .content;
             toml::from_str(default).expect("default theme must parse")
         })
+}
+
+/// Folder of the user's own themes: one rtop-format `<name>.toml` each.
+pub fn user_dir() -> PathBuf {
+    crate::tools::config_dir().join("themes")
+}
+
+pub fn is_bundled(name: &str) -> bool {
+    THEME_NAMES.iter().any(|t| t.eq_ignore_ascii_case(name))
+}
+
+/// Whether `name` is a bundled theme or a user theme that parses.
+pub fn exists(name: &str) -> bool {
+    is_bundled(name) || user_palette(name).is_some()
+}
+
+/// Every theme name: the bundled ones, then the user's own in name order.
+/// A user theme named like a bundled one is skipped; the bundled one wins.
+pub fn names() -> Vec<String> {
+    let mut user: Vec<String> = std::fs::read_dir(user_dir())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let path = e.ok()?.path();
+            (path.extension()? == "toml").then_some(())?;
+            let name = path.file_stem()?.to_str()?.to_owned();
+            (valid_name(&name) && !is_bundled(&name)).then_some(name)
+        })
+        .collect();
+    user.sort_by_key(|n| n.to_ascii_lowercase());
+    THEME_NAMES
+        .iter()
+        .map(|&n| n.to_owned())
+        .chain(user)
+        .collect()
+}
+
+/// A theme name usable as a file name: letters, digits, `_` and `-`.
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn user_palette(name: &str) -> Option<ThemePalette> {
+    if !valid_name(name) {
+        return None;
+    }
+    let text = std::fs::read_to_string(user_dir().join(format!("{name}.toml"))).ok()?;
+    toml::from_str(&text).ok()
+}
+
+/// Write a user theme, replacing one of the same name. Bundled names are
+/// refused so a user theme can never hide a bundled one.
+pub fn save_user(name: &str, palette: &ThemePalette) -> std::io::Result<()> {
+    if !valid_name(name) {
+        return Err(std::io::Error::other(
+            "use letters, digits, _ or - for the name",
+        ));
+    }
+    if is_bundled(name) {
+        return Err(std::io::Error::other(
+            "a bundled theme has that name; pick another",
+        ));
+    }
+    let body = toml::to_string_pretty(palette).map_err(std::io::Error::other)?;
+    let dir = user_dir();
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join(format!("{name}.toml")),
+        format!("# rztop theme, made with the theme editor. Also loads in rtop.\n\n{body}"),
+    )
+}
+
+pub fn delete_user(name: &str) -> std::io::Result<()> {
+    if !valid_name(name) || is_bundled(name) {
+        return Err(std::io::Error::other("not a user theme"));
+    }
+    std::fs::remove_file(user_dir().join(format!("{name}.toml")))
 }
 
 #[cfg(test)]
@@ -126,5 +211,34 @@ mod tests {
                 "THEME_NAMES[{i}] does not match BUNDLED_THEMES"
             );
         }
+    }
+
+    #[test]
+    fn saved_palette_reads_back_identically() {
+        for bt in BUNDLED_THEMES {
+            let palette: ThemePalette = toml::from_str(bt.content).unwrap();
+            let text = toml::to_string_pretty(&palette).unwrap();
+            let again: ThemePalette = toml::from_str(&text).unwrap();
+            assert_eq!(
+                toml::to_string(&again).unwrap(),
+                toml::to_string(&palette).unwrap(),
+                "theme '{}' changed in a save round trip",
+                bt.name,
+            );
+        }
+    }
+
+    #[test]
+    fn theme_names_must_be_file_safe() {
+        assert!(valid_name("my_theme-2"));
+        assert!(!valid_name(""));
+        assert!(!valid_name("../evil"));
+        assert!(!valid_name("has space"));
+        assert!(
+            names()
+                .iter()
+                .take(THEME_NAMES.len())
+                .eq(THEME_NAMES.iter())
+        );
     }
 }

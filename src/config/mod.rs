@@ -258,18 +258,18 @@ impl Config {
             }
         }
 
-        // The only remaining `validate_choice` call covers
-        // `color_theme` — the single string-typed field with a
-        // closed set of choices. The other browsable config
-        // fields are typed enums whose validity is enforced by
-        // serde at deserialise time.
-        validate_choice(
-            &mut self.ui.color_theme,
-            "default",
-            crate::theme::THEME_NAMES,
-            "color_theme",
-            &mut warnings,
-        );
+        // `color_theme` names a bundled theme or one of the user's own;
+        // anything else falls back to the default. The other closed-set
+        // fields are typed enums that serde validates on load.
+        if !crate::theme::exists(&self.ui.color_theme) {
+            validate_choice(
+                &mut self.ui.color_theme,
+                "default",
+                crate::theme::THEME_NAMES,
+                "color_theme",
+                &mut warnings,
+            );
+        }
 
         // Validate disk_filter: surface invalid drive entries as
         // warnings and drop them in place so the saved config
