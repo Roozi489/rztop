@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-08: process start time, for the process details window.
 // Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use std::fmt;
@@ -24,10 +25,6 @@ impl IoSort {
 
 /// Information about a single process.
 #[derive(Debug, Clone)]
-#[expect(
-    dead_code,
-    reason = "the collector fills fields the GUI does not show yet (command line, user, state, ...)"
-)]
 pub struct ProcInfo {
     /// Process ID.
     pub pid: u32,
@@ -61,6 +58,8 @@ pub struct ProcInfo {
     pub io_write: u64,
     /// General I/O bytes/second, requiring two valid samples of the same process.
     pub io_rates: Option<IoRates>,
+    /// When the process started, as a FILETIME (100 ns ticks since 1601, UTC).
+    pub started: Option<u64>,
 }
 
 impl Default for ProcInfo {
@@ -83,6 +82,7 @@ impl Default for ProcInfo {
             io_read: 0,
             io_write: 0,
             io_rates: None,
+            started: None,
         }
     }
 }

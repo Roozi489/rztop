@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-08: process start time, for the process details window.
 // Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::domain::process::{PriorityClass, ProcInfo, ProcState};
@@ -293,6 +294,7 @@ impl ProcCollector {
                         io_read: details.io_read,
                         io_write: details.io_write,
                         io_rates,
+                        started: details.started,
                     });
 
                     if Process32NextW(snapshot.get(), &mut entry).is_err() {
@@ -481,6 +483,8 @@ struct ProcessDetails {
     /// Cumulative bytes written over the process lifetime, spanning
     /// file, network and device I/O.
     io_write: u64,
+    /// Creation time as a FILETIME, 100 ns ticks since 1601 (UTC).
+    started: Option<u64>,
 }
 
 impl Default for ProcessDetails {
@@ -496,6 +500,7 @@ impl Default for ProcessDetails {
             cmd: String::new(),
             io_read: 0,
             io_write: 0,
+            started: None,
         }
     }
 }
@@ -538,6 +543,7 @@ fn get_process_details(
             {
                 let kt = filetime_to_u64(&kernel);
                 created = Some(filetime_to_u64(&creation));
+                details.started = created;
                 let ut = filetime_to_u64(&user_time);
                 details.cpu_time = kt.saturating_add(ut);
 

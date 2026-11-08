@@ -36,6 +36,7 @@ began on 2026-11-02; modified files are marked with a `Modified for rztop` heade
 ¹ Needs [PawnIO](#cpu-temperature-and-power) and administrator rights.
 
 - **Dockable layout**: drag a panel's caption onto another panel to split it or group the two as tabs; drag separators to resize.
+- **Process details**: click a process in any table to open a window with graphs of its CPU, memory (RAM and commit), I/O and GPU use over the last minutes, plus its parent, user, path, command line, uptime, priority, threads and totals. rztop keeps a short history for every process (up to 900 samples), so a window shows the recent past as soon as it opens, and stays open after its process exits.
 - **Title bar** in the theme's colours, replacing the system one to save a row: rztop's own CPU usage and the uptime, then icons for elevation, layout and settings. Drag it to move the window, double-click it to maximize, and resize from any edge.
 - **Layout menu** (the layout icon): **Save layout** stores the current arrangement and window position, **Load saved layout** restores it, **Reset layout** returns to the default arrangement sized to fit the window.
 - **Run as administrator** (the shield icon, shown when rztop is not elevated): restarts rztop elevated. It turns to the warning colour when some data is unavailable without elevation.

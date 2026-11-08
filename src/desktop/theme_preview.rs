@@ -58,7 +58,7 @@ pub(super) fn show(ui: &mut Ui, look: &Look, sample: Option<&Sample>, config: &C
         io: config.proc.io_sort,
     };
     panel(ui, look, column(2), "CPU", |ui| {
-        ranking_panel(ui, look, sample, Ranking::Cpu, &mut sorts);
+        ranking_panel(ui, look, sample, Ranking::Cpu, &mut sorts, &mut None);
     });
     border(&painter, rect, look);
 }

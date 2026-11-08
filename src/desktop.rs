@@ -39,6 +39,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod process_detail;
 mod settings;
 mod theme_editor;
 mod theme_picker;
@@ -425,6 +426,8 @@ struct Monitor {
     status: LatestSlot<StatusbarInfo>,
     /// Shared refresh interval in milliseconds, changed from Settings.
     interval: Arc<AtomicU64>,
+    /// Recent readings of every process, for the details windows.
+    history: Arc<std::sync::Mutex<process_detail::History>>,
     stops: Vec<mpsc::Sender<()>>,
     workers: Vec<JoinHandle<()>>,
 }
@@ -434,6 +437,8 @@ impl Monitor {
         let latest = LatestSlot::new();
         let status = LatestSlot::new();
         let interval = Arc::new(AtomicU64::new(interval_ms));
+        let history = Arc::new(std::sync::Mutex::new(process_detail::History::default()));
+        let recorder = history.clone();
         let (stop_sample, rx_sample) = mpsc::channel();
         let (stop_status, rx_status) = mpsc::channel();
         let sampler = spawn_worker(
@@ -453,19 +458,23 @@ impl Monitor {
                     processes,
                 )
             },
-            |(cpu, gpu, mem, disk, net, processes)| {
+            move |(cpu, gpu, mem, disk, net, processes)| {
                 cpu.collect();
                 gpu.collect();
                 mem.collect();
                 disk.collect();
                 net.collect();
                 processes.collect();
+                let procs = processes.snapshot().procs;
+                if let Ok(mut history) = recorder.lock() {
+                    history.record(&procs);
+                }
                 Sample {
                     cpu: cpu.snapshot().info,
                     gpus: gpu.snapshot().devices,
                     mem: mem.snapshot().info,
                     disks: disk.snapshot().info.disks,
-                    procs: processes.snapshot().procs,
+                    procs,
                     nets: net.snapshot().nets,
                 }
             },
@@ -485,6 +494,7 @@ impl Monitor {
             latest,
             status,
             interval,
+            history,
             stops: vec![stop_sample, stop_status],
             workers: vec![sampler, statusbar],
         }
@@ -573,6 +583,8 @@ struct Desktop {
     config_saved: Option<Result<(), String>>,
     /// The title bar's copy of the app icon, redrawn when the theme changes.
     title_icon: Option<egui::TextureHandle>,
+    /// Open process details windows.
+    details: process_detail::Details,
 }
 
 /// A layout the user chose to keep, with the window's position and size, so
@@ -754,6 +766,7 @@ impl eframe::App for Desktop {
             .show(ctx, |ui| {
                 self.title_bar(ui, sample.as_deref(), status.as_deref())
             });
+        let mut open_proc = None;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
@@ -767,6 +780,7 @@ impl eframe::App for Desktop {
                     look: &self.look,
                     fits: &mut self.fits,
                     dragged: &mut self.dragged,
+                    open_proc: &mut open_proc,
                 };
                 show_dock(ui, &mut self.dock, &mut panels);
                 if self.fitting > 0 {
@@ -775,6 +789,16 @@ impl eframe::App for Desktop {
                 }
             });
         let sample = self.monitor.latest.latest();
+        if let Some(pid) = open_proc {
+            self.details.open(ctx, &self.monitor.history, pid);
+        }
+        self.details.show(
+            ctx,
+            &self.look,
+            &self.monitor.history,
+            sample.as_deref(),
+            self.monitor.interval.load(Relaxed),
+        );
         self.settings_window(ctx, sample.as_deref());
         title_bar::edges(ctx, &self.look);
     }
@@ -1773,14 +1797,16 @@ fn column_edges(right: f32, columns: &[Column], cw: f32) -> Vec<f32> {
 type Cell = (String, Color32);
 
 /// Program column plus fixed-width value columns; only visible rows are
-/// built.
+/// built. Returns the row the user clicked, if any. `id` must differ between
+/// tables: rows and scroll state are keyed by it.
 fn table(
     ui: &mut Ui,
+    id: egui::Id,
     look: &Look,
     columns: &[Column],
     rows: usize,
     cell: impl Fn(usize) -> (String, Vec<Cell>),
-) {
+) -> Option<usize> {
     // The column headings are on the caption row (`ranking_header`).
     let cw = char_width(ui);
     let right = ui.max_rect().right();
@@ -1789,11 +1815,26 @@ fn table(
         (Some(edge), Some(first)) => edge - first.chars * cw - cw,
         _ => right,
     };
+    let mut clicked = None;
     egui::ScrollArea::vertical()
+        .id_salt(id)
         .auto_shrink(false)
         .show_rows(ui, ROW, rows, |ui, range| {
             for index in range {
                 let line = row(ui);
+                let response = ui
+                    .interact(line, id.with(index), Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if response.hovered() {
+                    ui.painter().rect_filled(
+                        line.expand2(vec2(4.0, 0.0)),
+                        CornerRadius::same(2),
+                        mix(look.bg, look.fg, 0.08),
+                    );
+                }
+                if response.clicked() {
+                    clicked = Some(index);
+                }
                 let (name, values) = cell(index);
                 let painter = ui.painter();
                 let cy = line.center().y;
@@ -1810,9 +1851,10 @@ fn table(
                 }
             }
         });
+    clicked
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Ranking {
     Cpu,
     Mem,
@@ -1865,6 +1907,7 @@ fn ranking_panel(
     sample: &Sample,
     ranking: Ranking,
     sorts: &mut Sorts,
+    open: &mut Option<u32>,
 ) -> f32 {
     let list = ranked(&sample.procs, ranking, sorts);
     let total_mem = sample.mem.stats.used + sample.mem.stats.available;
@@ -1884,7 +1927,10 @@ fn ranking_panel(
             .map_or_else(|| "N/A".to_owned(), |v| look.bytes(v))
     };
     let columns = ranking_columns(ranking, sorts);
-    table(ui, look, &columns, list.len(), |i| {
+    // Keyed by ranking and layer, so the Settings preview's table does not
+    // share rows with the panel.
+    let id = egui::Id::new(("process-table", ranking, ui.layer_id()));
+    let clicked = table(ui, id, look, &columns, list.len(), |i| {
         let p = list[i];
         let values = match ranking {
             Ranking::Cpu => {
@@ -1926,6 +1972,9 @@ fn ranking_panel(
         };
         (p.name.clone(), values)
     });
+    if let Some(i) = clicked {
+        *open = Some(list[i].pid);
+    }
     0.0
 }
 
@@ -1983,6 +2032,8 @@ struct Panels<'a> {
     look: &'a Look,
     fits: &'a mut [Fit; 10],
     dragged: &'a mut Option<Panel>,
+    /// A process row was clicked: open its details.
+    open_proc: &'a mut Option<u32>,
 }
 
 impl Panels<'_> {
@@ -2212,11 +2263,46 @@ impl TabViewer for Panels<'_> {
                 self.status.as_deref(),
                 self.net,
             ),
-            Panel::Io => ranking_panel(ui, self.look, &sample, Ranking::Io, self.sorts),
-            Panel::CpuProcs => ranking_panel(ui, self.look, &sample, Ranking::Cpu, self.sorts),
-            Panel::MemProcs => ranking_panel(ui, self.look, &sample, Ranking::Mem, self.sorts),
-            Panel::GpuProcs => ranking_panel(ui, self.look, &sample, Ranking::Gpu, self.sorts),
-            Panel::VramProcs => ranking_panel(ui, self.look, &sample, Ranking::Vram, self.sorts),
+            Panel::Io => ranking_panel(
+                ui,
+                self.look,
+                &sample,
+                Ranking::Io,
+                self.sorts,
+                self.open_proc,
+            ),
+            Panel::CpuProcs => ranking_panel(
+                ui,
+                self.look,
+                &sample,
+                Ranking::Cpu,
+                self.sorts,
+                self.open_proc,
+            ),
+            Panel::MemProcs => ranking_panel(
+                ui,
+                self.look,
+                &sample,
+                Ranking::Mem,
+                self.sorts,
+                self.open_proc,
+            ),
+            Panel::GpuProcs => ranking_panel(
+                ui,
+                self.look,
+                &sample,
+                Ranking::Gpu,
+                self.sorts,
+                self.open_proc,
+            ),
+            Panel::VramProcs => ranking_panel(
+                ui,
+                self.look,
+                &sample,
+                Ranking::Vram,
+                self.sorts,
+                self.open_proc,
+            ),
         };
         if content > 0.0 {
             self.fits[panel.index()] = Fit {
@@ -2395,6 +2481,7 @@ pub fn run_desktop() -> eframe::Result {
                 config_dirty: false,
                 config_saved: None,
                 title_icon: None,
+                details: process_detail::Details::default(),
             }))
         }),
     )
@@ -2592,6 +2679,7 @@ mod tests {
                             look: &look,
                             fits: &mut [Fit::default(); 10],
                             dragged: &mut None,
+                            open_proc: &mut None,
                         },
                     );
                 });
