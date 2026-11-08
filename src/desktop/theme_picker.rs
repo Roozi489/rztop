@@ -76,7 +76,7 @@ impl ThemeGrid {
 }
 
 /// The colour roles in the order the thumbnail shows them.
-fn roles(look: &Look) -> [(&'static str, &Gradient); 10] {
+fn roles(look: &Look) -> [(&'static str, &Gradient); 9] {
     [
         ("Load", &look.load),
         ("Sys", &look.load2),
@@ -84,8 +84,7 @@ fn roles(look: &Look) -> [(&'static str, &Gradient); 10] {
         ("Power", &look.power),
         ("Clock", &look.clock),
         ("Fill", &look.fill),
-        ("Avail", &look.mem_avail),
-        ("Cache", &look.mem_cache),
+        ("Comprs", &look.mem_cache),
         ("In", &look.inbound),
         ("Out", &look.outbound),
     ]

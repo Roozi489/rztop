@@ -1,4 +1,4 @@
-// Modified for rztop on 2026-11-08: process start time, for the process details window.
+// Modified for rztop on 2026-11-08: process start time, for the process details window; compressed memory.
 // Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 use crate::domain::process::{PriorityClass, ProcInfo, ProcState};
@@ -170,6 +170,8 @@ pub struct ProcCollector {
     last_collect: std::time::Instant,
     core_count: usize,
     gpu: super::process_gpu::ProcessGpu,
+    /// Working set of the Memory Compression process, from the last scan.
+    compressed: Option<u64>,
 }
 
 impl ProcCollector {
@@ -182,7 +184,16 @@ impl ProcCollector {
             last_collect: std::time::Instant::now(),
             core_count: 1,
             gpu: super::process_gpu::ProcessGpu::default(),
+            compressed: None,
         }
+    }
+
+    /// RAM holding compressed pages: the working set of Windows' Memory
+    /// Compression process, read from the system process list, which
+    /// needs no access to the process itself. `None` when it is not
+    /// running (memory compression off).
+    pub fn compressed_memory(&self) -> Option<u64> {
+        self.compressed
     }
 
     /// Set the core count used for CPU percentage calculation.
@@ -209,7 +220,9 @@ impl ProcCollector {
         let previous_io = std::mem::take(&mut self.prev_io);
         // One system-wide query, before walking the Toolhelp snapshot,
         // so each process can be labelled without a second syscall.
-        let suspended = collect_suspended_pids();
+        let scan = scan_system_processes();
+        let suspended = scan.suspended;
+        self.compressed = scan.compressed;
 
         // SAFETY: CreateToolhelp32Snapshot returns a valid handle (checked via
         // Err). PROCESSENTRY32W has dwSize set correctly. Process32FirstW and
@@ -394,21 +407,34 @@ fn query_system_processes() -> Option<(Vec<u64>, usize)> {
     }
 }
 
-/// PIDs whose every thread sits in a suspended wait.
-///
-/// One system-wide call covers every process, which is far cheaper
-/// than opening each process and querying its threads individually. A
-/// process counts as suspended only when it has at least one thread
-/// and all of them are parked, matching how Process Explorer and
-/// Process Hacker report the state.
-fn collect_suspended_pids() -> HashSet<u32> {
+/// What one walk of the system process list finds.
+#[derive(Default)]
+struct SystemScan {
+    /// PIDs whose every thread sits in a suspended wait.
+    ///
+    /// One system-wide call covers every process, which is far cheaper
+    /// than opening each process and querying its threads individually. A
+    /// process counts as suspended only when it has at least one thread
+    /// and all of them are parked, matching how Process Explorer and
+    /// Process Hacker report the state.
+    suspended: HashSet<u32>,
+    /// Working set of the Memory Compression process.
+    compressed: Option<u64>,
+}
+
+/// Name of the process whose working set holds Windows' compressed memory.
+const MEMORY_COMPRESSION: &str = "Memory Compression";
+
+/// Walk the system process list once: suspended processes and the
+/// compressed memory store.
+fn scan_system_processes() -> SystemScan {
     use windows::Win32::System::WindowsProgramming::{
         SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION,
     };
 
-    let mut suspended = HashSet::new();
+    let mut scan = SystemScan::default();
     let Some((buf, used)) = query_system_processes() else {
-        return suspended;
+        return scan;
     };
 
     let base = buf.as_ptr().cast::<u8>();
@@ -427,6 +453,10 @@ fn collect_suspended_pids() -> HashSet<u32> {
         // Copying the record ends the borrow immediately, so the walk
         // below does not hold a reference into the buffer.
         let record = unsafe { *base.add(offset).cast::<SYSTEM_PROCESS_INFORMATION>() };
+
+        if scan.compressed.is_none() && image_name(&record, base, used) == MEMORY_COMPRESSION {
+            scan.compressed = Some(record.WorkingSetSize as u64);
+        }
 
         let threads_offset = offset + size_of::<SYSTEM_PROCESS_INFORMATION>();
         let threads_len = (record.NumberOfThreads as usize)
@@ -447,7 +477,7 @@ fn collect_suspended_pids() -> HashSet<u32> {
                 t.ThreadState == THREAD_STATE_WAIT && t.WaitReason == WAIT_REASON_SUSPENDED
             });
             if all_parked {
-                suspended.insert(pid);
+                scan.suspended.insert(pid);
             }
         }
 
@@ -460,7 +490,31 @@ fn collect_suspended_pids() -> HashSet<u32> {
         offset = offset.saturating_add(step);
     }
 
-    suspended
+    scan
+}
+
+/// A record's image name, when its text lies inside the snapshot.
+fn image_name(
+    record: &windows::Win32::System::WindowsProgramming::SYSTEM_PROCESS_INFORMATION,
+    base: *const u8,
+    used: usize,
+) -> String {
+    let name = &record.ImageName;
+    let units = usize::from(name.Length) / 2;
+    let begin = name.Buffer.0 as usize;
+    let first = base as usize;
+    // The kernel points ImageName into the same buffer; refuse anything else.
+    if units == 0
+        || begin < first
+        || begin.saturating_add(units * 2) > first.saturating_add(used)
+        || !begin.is_multiple_of(2)
+    {
+        return String::new();
+    }
+    // SAFETY: the checks above prove the `units` UTF-16 code units lie
+    // inside the initialised, 2-byte-aligned region of the snapshot.
+    let text = unsafe { std::slice::from_raw_parts(name.Buffer.0.cast_const(), units) };
+    String::from_utf16_lossy(text)
 }
 
 /// Per-process values read from a single `OpenProcess` handle.
@@ -991,7 +1045,7 @@ mod tests {
             .expect("spawning a suspended child must succeed");
         let pid = child.id();
 
-        let suspended = collect_suspended_pids();
+        let suspended = scan_system_processes().suspended;
         let found = suspended.contains(&pid);
 
         // Terminate before asserting so a failure cannot leak the
@@ -1006,11 +1060,25 @@ mod tests {
     }
 
     #[test]
+    fn compressed_memory_comes_from_the_memory_compression_process() {
+        // Toolhelp lists the store by the same name; when it runs (memory
+        // compression on), the scan must find it and read a working set.
+        let mut collector = ProcCollector::new();
+        collector.collect();
+        let running = collector.procs.iter().any(|p| p.name == MEMORY_COMPRESSION);
+        let compressed = collector.compressed_memory();
+        assert_eq!(compressed.is_some(), running);
+        if let Some(bytes) = compressed {
+            assert!(bytes > 0, "the compression store always holds some RAM");
+        }
+    }
+
+    #[test]
     fn running_processes_are_not_reported_as_suspended() {
         // The current process is demonstrably running, so it must not
         // appear in the set. Guards against a walk that mislabels
         // every process, which the test above alone would not catch.
-        let suspended = collect_suspended_pids();
+        let suspended = scan_system_processes().suspended;
         assert!(
             !suspended.contains(&std::process::id()),
             "the running test process must not be reported as suspended",

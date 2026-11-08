@@ -260,7 +260,6 @@ struct Look {
     /// How full: RAM used, commit, swap, VRAM, disk space, process memory.
     fill: Gradient,
     /// Memory breakdown bars, kept distinct from Used.
-    mem_avail: Gradient,
     mem_cache: Gradient,
     /// Inbound data: network download, disk read, process I/O read.
     inbound: Gradient,
@@ -309,7 +308,6 @@ impl Look {
             power: Gradient::new(&g.gpu_power),
             clock: Gradient::new(&g.gpu_clock),
             fill: Gradient::new(&g.used),
-            mem_avail: Gradient::new(&g.available),
             mem_cache: Gradient::new(&g.cached),
             inbound: Gradient::new(&g.download),
             outbound: Gradient::new(&g.upload),
@@ -469,10 +467,12 @@ impl Monitor {
                 if let Ok(mut history) = recorder.lock() {
                     history.record(&procs);
                 }
+                let mut mem = mem.snapshot().info;
+                mem.stats.compressed = processes.compressed_memory();
                 Sample {
                     cpu: cpu.snapshot().info,
                     gpus: gpu.snapshot().devices,
-                    mem: mem.snapshot().info,
+                    mem,
                     disks: disk.snapshot().info.disks,
                     procs,
                     nets: net.snapshot().nets,
@@ -1446,21 +1446,15 @@ fn mem_panel(ui: &mut Ui, look: &Look, mem: &MemInfo) -> f32 {
         &look.bytes(s.used),
         &look.fill,
     );
-    meter_row(
-        ui,
-        look,
-        "Avail",
-        pct_of(s.available, total),
-        &look.bytes(s.available),
-        &look.mem_avail,
-    );
-    if s.cached > 0 {
+    // RAM holding compressed pages, out of all RAM; absent when Windows'
+    // memory compression is off.
+    if let Some(compressed) = s.compressed {
         meter_row(
             ui,
             look,
-            "Cache",
-            pct_of(s.cached, total),
-            &look.bytes(s.cached),
+            "Comprs",
+            pct_of(compressed, total),
+            &look.bytes(compressed),
             &look.mem_cache,
         );
     }

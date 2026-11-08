@@ -27,7 +27,7 @@ began on 2026-11-02; modified files are marked with a `Modified for rztop` heade
 |-------|-------|
 | **CPU** | Total and per-core usage graphs, clock, temperature¹ and power¹ |
 | **GPU** | Utilization, VRAM, power and clock graphs; temperature. NVIDIA, AMD and Intel |
-| **Memory** | Used, available, cached, commit and swap meters |
+| **Memory** | Used, compressed, commit and swap meters; compressed is the RAM holding Windows' compressed pages |
 | **Network** | Download/upload graphs with auto-scaling, adapter selector, ping history |
 | **Disks** | Per-volume usage, read/write throughput and busy time |
 | **I/O** | Processes ranked by read/s, write/s or total |

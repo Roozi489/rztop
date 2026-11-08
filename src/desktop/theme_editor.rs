@@ -130,15 +130,14 @@ impl ThemeEditor {
         );
         ui.add_space(4.0);
         let g = &mut self.palette.gradients;
-        let roles: [(&str, &str, &mut GradientDef); 10] = [
+        let roles: [(&str, &str, &mut GradientDef); 9] = [
             ("Load", "CPU, GPU, cores, disk busy, ping", &mut g.cpu_upper),
             ("Sys", "System half of the CPU graph", &mut g.cpu_lower),
             ("Temp", "Temperatures; warnings use its middle", &mut g.temp),
             ("Power", "CPU and GPU watts", &mut g.gpu_power),
             ("Clock", "CPU and GPU clocks", &mut g.gpu_clock),
             ("Fill", "Used, commit, swap, VRAM, disks", &mut g.used),
-            ("Avail", "Available memory", &mut g.available),
-            ("Cache", "Cached memory", &mut g.cached),
+            ("Comprs", "Compressed memory, process commit", &mut g.cached),
             ("In", "Download, disk read, I/O read", &mut g.download),
             ("Out", "Upload, disk write, I/O write", &mut g.upload),
         ];
