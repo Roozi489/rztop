@@ -3,7 +3,7 @@
 
 use super::theme_editor::{Action, ThemeEditor};
 use super::theme_picker::ThemeGrid;
-use super::{Look, adapter_name, text};
+use super::{Look, Sample, adapter_name, text, theme_preview};
 use crate::config::Config;
 use crate::domain::{config_enums::TempScale, disk::DiskFilter, network::NetInfo};
 use eframe::egui::{self, Align2, Ui, vec2};
@@ -30,7 +30,7 @@ impl Section {
     fn title(self) -> &'static str {
         match self {
             Section::Appearance => "Appearance",
-            Section::Data => "Data & scales",
+            Section::Data => "Data & units",
             Section::Network => "Network & disks",
             Section::Logging => "Logging",
         }
@@ -56,6 +56,8 @@ pub(super) struct Changes {
 
 /// Facts the window shows but does not edit.
 pub(super) struct Context<'a> {
+    /// The latest sample, drawn by the theme preview.
+    pub(super) sample: Option<&'a Sample>,
     pub(super) nets: &'a [NetInfo],
     pub(super) drives: Vec<String>,
     pub(super) config_path: &'a Path,
@@ -75,6 +77,10 @@ pub(super) struct Settings {
     editor: Option<ThemeEditor>,
     /// The app is showing the editor's colours instead of the saved theme.
     previewing: bool,
+    /// The thumbnail under the pointer last frame, shown in the preview.
+    hovered: Option<String>,
+    /// Units or scales changed since the thumbnails were built.
+    themes_stale: bool,
 }
 
 impl Settings {
@@ -139,7 +145,7 @@ impl Settings {
             .default_pos(screen.center())
             .default_size(vec2(
                 (screen.width() - 80.0).min(1040.0),
-                (screen.height() - 120.0).min(640.0),
+                (screen.height() - 120.0).min(860.0),
             ))
             .show(ctx, |ui| {
                 egui::TopBottomPanel::bottom("settings-footer")
@@ -167,6 +173,9 @@ impl Settings {
                         ..Default::default()
                     }))
                     .show_inside(ui, |ui| {
+                        if self.section == Section::Appearance {
+                            self.preview_pane(ui, config, look, info);
+                        }
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| match self.section {
@@ -183,8 +192,35 @@ impl Settings {
             });
         self.open = open;
         self.sync_preview(&mut changes);
+        if !self.open || self.section != Section::Appearance || self.editor.is_some() {
+            self.hovered = None;
+        }
+        // Thumbnails carry units and scales too, which the preview shows.
+        if changes.look && !changes.theme {
+            self.themes_stale = true;
+        }
         changes.any |= changes.look || changes.interval || changes.net || changes.log;
         changes
+    }
+
+    /// The large preview above the theme grid or editor: the theme under
+    /// the pointer, else the one in effect (the editor's draft while editing).
+    fn preview_pane(&self, ui: &mut Ui, config: &Config, look: &Look, info: &Context) {
+        let hovered = self
+            .hovered
+            .as_deref()
+            .and_then(|name| Some((name, self.themes.look(name)?)));
+        let (name, shown) = match (hovered, &self.editor) {
+            (Some((name, hovered)), _) => (name, hovered),
+            (None, Some(editor)) => (editor.name.as_str(), look),
+            (None, None) => (config.ui.color_theme.as_str(), look),
+        };
+        theme_preview::show(ui, shown, info.sample, config);
+        ui.add_space(4.0);
+        if self.editor.is_none() {
+            ui.label(theme_preview::hint(look, name, hovered.is_some()));
+        }
+        ui.add_space(8.0);
     }
 
     fn appearance(&mut self, ui: &mut Ui, config: &mut Config, look: &Look, ch: &mut Changes) {
@@ -227,44 +263,19 @@ impl Settings {
                 self.editor = Some(ThemeEditor::new(current));
             }
         });
+        if std::mem::take(&mut self.themes_stale) {
+            self.themes.refresh();
+        }
         let current = config.ui.color_theme.clone();
-        if let Some(name) = self.themes.show(ui, config, &current)
+        let (picked, hovered) = self.themes.show(ui, config, &current);
+        self.hovered = hovered;
+        if let Some(name) = picked
             && !name.eq_ignore_ascii_case(&current)
         {
             config.ui.color_theme = name;
             ch.look = true;
             ch.theme = true;
         }
-        ui.add_space(14.0);
-        heading(ui, look, "Units");
-        grid(ui, "units", |ui| {
-            label(ui, look, "Temperature");
-            egui::ComboBox::from_id_salt("temp-scale")
-                .selected_text(temp_name(config.cpu.temp_scale))
-                .show_ui(ui, |ui| {
-                    for &scale in TempScale::ALL {
-                        ch.look |= ui
-                            .selectable_value(&mut config.cpu.temp_scale, scale, temp_name(scale))
-                            .changed();
-                    }
-                });
-            ui.end_row();
-
-            label(ui, look, "Sizes");
-            ui.horizontal(|ui| {
-                ch.look |= ui
-                    .radio_value(
-                        &mut config.ui.base_10_sizes,
-                        false,
-                        "1024-based, like Task Manager",
-                    )
-                    .changed();
-                ch.look |= ui
-                    .radio_value(&mut config.ui.base_10_sizes, true, "1000-based")
-                    .changed();
-            });
-            ui.end_row();
-        });
     }
 
     fn network(
@@ -403,7 +414,37 @@ fn data(ui: &mut Ui, config: &mut Config, look: &Look, ch: &mut Changes) {
             )
             .changed();
         ui.end_row();
-        hint_row(ui, look, "Same as - / + in the status bar");
+    });
+
+    ui.add_space(14.0);
+    heading(ui, look, "Units");
+    grid(ui, "units", |ui| {
+        label(ui, look, "Temperature");
+        egui::ComboBox::from_id_salt("temp-scale")
+            .selected_text(temp_name(config.cpu.temp_scale))
+            .show_ui(ui, |ui| {
+                for &scale in TempScale::ALL {
+                    ch.look |= ui
+                        .selectable_value(&mut config.cpu.temp_scale, scale, temp_name(scale))
+                        .changed();
+                }
+            });
+        ui.end_row();
+
+        label(ui, look, "Sizes");
+        ui.horizontal(|ui| {
+            ch.look |= ui
+                .radio_value(
+                    &mut config.ui.base_10_sizes,
+                    false,
+                    "1024-based, like Task Manager",
+                )
+                .changed();
+            ch.look |= ui
+                .radio_value(&mut config.ui.base_10_sizes, true, "1000-based")
+                .changed();
+        });
+        ui.end_row();
     });
 
     ui.add_space(14.0);

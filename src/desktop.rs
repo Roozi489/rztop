@@ -42,6 +42,7 @@ use std::{
 mod settings;
 mod theme_editor;
 mod theme_picker;
+mod theme_preview;
 mod title_bar;
 
 /// Bumped whenever panels are added, so an older saved arrangement
@@ -685,6 +686,7 @@ impl Desktop {
             config_path: &self.config_path,
             log_dir: &log_dir,
             saved: self.config_saved.as_ref(),
+            sample,
         };
         let changes = self.settings.show(ctx, &mut self.config, &self.look, &info);
         if changes.look || changes.preview {

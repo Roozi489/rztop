@@ -29,9 +29,22 @@ impl ThemeGrid {
         self.looks.clear();
     }
 
+    /// A theme's colours, once the grid has been shown.
+    pub(super) fn look(&self, name: &str) -> Option<&Look> {
+        self.looks
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, look)| look)
+    }
+
     /// Draw the thumbnails, wrapping to the available width. Returns the
-    /// theme the user clicked.
-    pub(super) fn show(&mut self, ui: &mut Ui, config: &Config, current: &str) -> Option<String> {
+    /// theme the user clicked and the one under the pointer.
+    pub(super) fn show(
+        &mut self,
+        ui: &mut Ui,
+        config: &Config,
+        current: &str,
+    ) -> (Option<String>, Option<String>) {
         if self.looks.is_empty() {
             self.looks = crate::theme::names()
                 .into_iter()
@@ -42,18 +55,23 @@ impl ThemeGrid {
                 .collect();
         }
         let mut picked = None;
+        let mut hovered = None;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = vec2(PAD, PAD);
             ui.horizontal_wrapped(|ui| {
                 for (name, look) in &self.looks {
                     let selected = name.eq_ignore_ascii_case(current);
-                    if thumbnail(ui, name, look, selected).clicked() {
+                    let response = thumbnail(ui, name, look, selected);
+                    if response.clicked() {
                         picked = Some(name.clone());
+                    }
+                    if response.hovered() {
+                        hovered = Some(name.clone());
                     }
                 }
             });
         });
-        picked
+        (picked, hovered)
     }
 }
 

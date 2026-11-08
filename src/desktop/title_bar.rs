@@ -194,10 +194,15 @@ fn icon_button(ui: &mut Ui, look: &Look, icon: Icon, color: Color32) -> egui::Re
     } else {
         color
     };
-    let c = rect.center();
+    paint_icon(&painter, rect.center(), icon, color);
+    response
+}
+
+/// Draw `icon` centred on `c`, about 16 points across.
+fn paint_icon(painter: &egui::Painter, c: Pos2, icon: Icon, color: Color32) {
     let stroke = Stroke::new(1.4_f32, color);
     match icon {
-        Icon::Settings => gear(&painter, c, stroke),
+        Icon::Settings => gear(painter, c, stroke),
         Icon::Layout => {
             // A window split into panels, like the dock.
             let r = Rect::from_center_size(c, vec2(15.0, 13.0));
@@ -228,7 +233,6 @@ fn icon_button(ui: &mut Ui, look: &Look, icon: Icon, color: Color32) -> egui::Re
             painter.circle_filled(p(0.0, 3.6), 0.95, color);
         }
     }
-    response
 }
 
 /// A gear: a ring with eight teeth around a hub.
@@ -267,7 +271,18 @@ fn control(ui: &mut Ui, look: &Look, control: Control) -> egui::Response {
         };
         painter.rect_filled(rect, CornerRadius::ZERO, bg);
     }
-    let c = rect.center();
+    paint_control(&painter, rect.center(), control, color);
+    let tip = match control {
+        Control::Minimize => "Minimize",
+        Control::Maximize => "Maximize",
+        Control::Restore => "Restore down",
+        Control::Close => "Close",
+    };
+    response.on_hover_text(tip)
+}
+
+/// Draw a caption button's glyph centred on `c`.
+fn paint_control(painter: &egui::Painter, c: Pos2, control: Control, color: Color32) {
     let stroke = Stroke::new(1.0_f32, color);
     let h = 5.0;
     match control {
@@ -303,13 +318,6 @@ fn control(ui: &mut Ui, look: &Look, control: Control) -> egui::Response {
             painter.line_segment([c + vec2(-h, h), c + vec2(h, -h)], stroke);
         }
     }
-    let tip = match control {
-        Control::Minimize => "Minimize",
-        Control::Maximize => "Maximize",
-        Control::Restore => "Restore down",
-        Control::Close => "Close",
-    };
-    response.on_hover_text(tip)
 }
 
 /// Resize the window by dragging its edges and corners, and draw a thin
