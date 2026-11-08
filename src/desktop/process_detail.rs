@@ -12,7 +12,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 const KEEP: usize = 900;
 const GRAPH_H: f32 = 64.0;
 
-/// One process's recent readings, oldest first.
+/// One process's recent readings, oldest first. Every process gets one,
+/// so readings are stored as `f32` (exact to about seven significant
+/// digits, which a graph cannot show anyway) and the GPU series only once
+/// the process has used the GPU.
 #[derive(Default)]
 pub(super) struct Track {
     /// The latest reading; kept after the process exits.
@@ -20,44 +23,70 @@ pub(super) struct Track {
     /// The process was missing from the latest sample.
     pub(super) exited: bool,
     /// CPU in hundredths of a percent of one core.
-    cpu: VecDeque<i64>,
-    ram: VecDeque<i64>,
-    commit: VecDeque<i64>,
-    read: VecDeque<i64>,
-    write: VecDeque<i64>,
-    /// GPU in hundredths of a percent.
-    gpu: VecDeque<i64>,
-    vram: VecDeque<i64>,
+    cpu: VecDeque<f32>,
+    ram: VecDeque<f32>,
+    commit: VecDeque<f32>,
+    read: VecDeque<f32>,
+    write: VecDeque<f32>,
+    /// GPU in hundredths of a percent; empty until `has_gpu`.
+    gpu: VecDeque<f32>,
+    /// Empty until `has_gpu`.
+    vram: VecDeque<f32>,
     has_gpu: bool,
 }
 
 impl Track {
     fn push(&mut self, p: &ProcInfo) {
-        let clamp = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
         let io = p
             .io_rates
             .unwrap_or(crate::domain::process::IoRates { read: 0, write: 0 });
         for (series, value) in [
-            (&mut self.cpu, (p.cpu_p.max(0.0) * 100.0) as i64),
-            (&mut self.ram, clamp(p.ram)),
-            (&mut self.commit, clamp(p.mem)),
-            (&mut self.read, clamp(io.read)),
-            (&mut self.write, clamp(io.write)),
-            (
-                &mut self.gpu,
-                (p.gpu_p.unwrap_or(0.0).max(0.0) * 100.0) as i64,
-            ),
-            (&mut self.vram, clamp(p.gpu_mem.unwrap_or(0))),
+            (&mut self.cpu, (p.cpu_p.max(0.0) * 100.0) as f32),
+            (&mut self.ram, p.ram as f32),
+            (&mut self.commit, p.mem as f32),
+            (&mut self.read, io.read as f32),
+            (&mut self.write, io.write as f32),
         ] {
-            if series.len() == KEEP {
-                series.pop_front();
-            }
-            series.push_back(value);
+            append(series, value);
         }
         self.has_gpu |= p.gpu_p.is_some_and(|v| v > 0.0) || p.gpu_mem.is_some_and(|v| v > 0);
+        if self.has_gpu {
+            // Every earlier reading was zero, or `has_gpu` would be set.
+            let earlier = self.cpu.len() - 1;
+            for (series, value) in [
+                (
+                    &mut self.gpu,
+                    (p.gpu_p.unwrap_or(0.0).max(0.0) * 100.0) as f32,
+                ),
+                (&mut self.vram, p.gpu_mem.unwrap_or(0) as f32),
+            ] {
+                if series.len() < earlier {
+                    series.reserve_exact(earlier - series.len() + 1);
+                    series.resize(earlier, 0.0);
+                }
+                append(series, value);
+            }
+        }
         self.last = p.clone();
         self.exited = false;
     }
+}
+
+/// Add `value` to a series, dropping the oldest past `KEEP`. Grows the
+/// buffer by doubling, but never past `KEEP`.
+fn append(series: &mut VecDeque<f32>, value: f32) {
+    if series.len() >= KEEP {
+        series.pop_front();
+    } else if series.len() == series.capacity() {
+        let grow = series.len().max(8).min(KEEP - series.len());
+        series.reserve_exact(grow);
+    }
+    series.push_back(value);
+}
+
+/// A series as whole numbers, for the graphs.
+fn decode(series: &VecDeque<f32>) -> VecDeque<i64> {
+    series.iter().map(|&v| v as i64).collect()
 }
 
 /// Every running process's track, written by the sampler thread.
@@ -323,7 +352,7 @@ fn facts(
             ui.end_row();
 
             let user = if p.user.is_empty() {
-                "unknown (needs administrator)".to_owned()
+                NEEDS_ADMIN.to_owned()
             } else {
                 p.user.clone()
             };
@@ -361,11 +390,17 @@ fn facts(
             );
             let cpu = display_cpu_percent(p.cpu_p, cores, look.per_core);
             row(ui, "CPU", format!("{cpu:.1}%"));
-            row(
-                ui,
-                "Memory",
-                format!("{} RAM, {} commit", look.bytes(p.ram), look.bytes(p.mem)),
-            );
+            if memory_hidden(p) {
+                ui.label(text("Memory", look.label));
+                ui.label(text(NEEDS_ADMIN, look.warn));
+                ui.end_row();
+            } else {
+                row(
+                    ui,
+                    "Memory",
+                    format!("{} RAM, {} commit", look.bytes(p.ram), look.bytes(p.mem)),
+                );
+            }
             row(
                 ui,
                 "I/O total",
@@ -436,7 +471,7 @@ fn graphs(ui: &mut Ui, look: &Look, track: &Track, cores: usize, interval_ms: u6
     } else {
         cores.max(1) as i64
     };
-    let cpu: VecDeque<i64> = track.cpu.iter().map(|v| v / scale).collect();
+    let cpu: VecDeque<i64> = track.cpu.iter().map(|&v| v as i64 / scale).collect();
     let pct = |v: i64| format!("{:.1}%", v as f64 / 100.0);
     // Per-core readings can reach 100% for every core.
     let full = 100
@@ -453,36 +488,55 @@ fn graphs(ui: &mut Ui, look: &Look, track: &Track, cores: usize, interval_ms: u6
         look,
         "Memory",
         [
-            ("RAM", &track.ram, &look.fill),
-            ("Commit", &track.commit, &look.mem_cache),
+            ("RAM", &decode(&track.ram), &look.fill),
+            ("Commit", &decode(&track.commit), &look.mem_cache),
         ],
         &|v| look.bytes(v.max(0) as u64),
         true,
+        memory_hidden(&track.last),
     );
     mirrored(
         ui,
         look,
         "I/O",
         [
-            ("Read", &track.read, &look.inbound),
-            ("Write", &track.write, &look.outbound),
+            ("Read", &decode(&track.read), &look.inbound),
+            ("Write", &decode(&track.write), &look.outbound),
         ],
         &|v| look.rate(v.max(0) as u64),
+        false,
         false,
     );
     if track.has_gpu {
         let gpu_pct = |v: i64| format!("{:.1}%", v as f64 / 100.0);
-        single(ui, look, "GPU", &track.gpu, &look.load, &gpu_pct, 100 * 100);
+        single(
+            ui,
+            look,
+            "GPU",
+            &decode(&track.gpu),
+            &look.load,
+            &gpu_pct,
+            100 * 100,
+        );
         single(
             ui,
             look,
             "VRAM",
-            &track.vram,
+            &decode(&track.vram),
             &look.fill,
             &|v| look.bytes(v.max(0) as u64),
             0,
         );
     }
+}
+
+const NEEDS_ADMIN: &str = "unknown (needs administrator)";
+
+/// Windows hides the memory of some processes (services, other users'
+/// processes) from a non-elevated rztop; both counters then read zero,
+/// which no running process really has.
+fn memory_hidden(p: &ProcInfo) -> bool {
+    p.ram == 0 && p.mem == 0
 }
 
 /// Largest value in the part of `series` a graph `width` wide shows.
@@ -585,7 +639,21 @@ fn mirrored(
     series: [(&str, &VecDeque<i64>, &Gradient); 2],
     format: &dyn Fn(i64) -> String,
     shared: bool,
+    hidden: bool,
 ) {
+    if hidden {
+        heading(ui, look, name, &[(NEEDS_ADMIN.to_owned(), look.warn)]);
+        let rect = graph_rect(ui, look);
+        ui.painter_at(rect).text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "Run rztop as administrator to see its memory",
+            super::mono(),
+            look.label,
+        );
+        ui.add_space(10.0);
+        return;
+    }
     let width = ui.available_width();
     let [(a_name, a, a_grad), (b_name, b, b_grad)] = series;
     let (a_top, b_top) = (peak(a, width), peak(b, width));
@@ -721,7 +789,7 @@ mod tests {
         assert_eq!(history.track(4).map(|t| t.cpu.len()), Some(2));
         assert_eq!(
             history.track(4).and_then(|t| t.cpu.back().copied()),
-            Some(2000)
+            Some(2000.0)
         );
 
         // b.exe exits: dropped, unless a window keeps it.
@@ -743,7 +811,33 @@ mod tests {
         for _ in 0..KEEP + 10 {
             history.record(&[proc(4, "a.exe", 1, 1.0)]);
         }
-        assert_eq!(history.track(4).map(|t| t.ram.len()), Some(KEEP));
+        let track = history.track(4).expect("tracked");
+        assert_eq!(track.ram.len(), KEEP);
+        // Grown to exactly the cap, not the next power of two.
+        assert_eq!(track.ram.capacity(), KEEP);
+    }
+
+    #[test]
+    fn gpu_series_start_when_the_gpu_is_used() {
+        let mut history = History::default();
+        for _ in 0..3 {
+            history.record(&[proc(4, "a.exe", 1, 1.0)]);
+        }
+        let track = history.track(4).expect("tracked");
+        assert!(track.gpu.is_empty() && track.vram.capacity() == 0);
+
+        let mut busy = proc(4, "a.exe", 1, 1.0);
+        busy.gpu_p = Some(12.5);
+        busy.gpu_mem = Some(1 << 20);
+        history.record(&[busy]);
+        let track = history.track(4).expect("tracked");
+        // Earlier samples read as zero, aligned with the other series.
+        assert_eq!(track.gpu.len(), track.cpu.len());
+        assert_eq!(
+            track.gpu.iter().copied().collect::<Vec<_>>(),
+            [0.0, 0.0, 0.0, 1250.0]
+        );
+        assert_eq!(track.vram.back().copied(), Some(1_048_576.0));
     }
 
     #[test]
