@@ -40,9 +40,13 @@ pub(super) struct State<'a> {
     /// Some data is missing for lack of elevation; the shield warns.
     pub(super) admin_limited: bool,
     pub(super) has_saved_layout: bool,
+    /// The process name filter, edited in the bar.
+    pub(super) filter: &'a mut String,
+    /// The filter field is shown.
+    pub(super) filter_open: &'a mut bool,
 }
 
-pub(super) fn show(ui: &mut Ui, look: &Look, state: &State) -> Actions {
+pub(super) fn show(ui: &mut Ui, look: &Look, state: &mut State) -> Actions {
     let mut actions = Actions::default();
     let bar = ui.max_rect();
     let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
@@ -86,6 +90,7 @@ pub(super) fn show(ui: &mut Ui, look: &Look, state: &State) -> Actions {
                 .on_hover_text("Settings")
                 .clicked();
             layout_menu(ui, look, state.has_saved_layout, &mut actions);
+            process_filter(ui, look, state.filter, state.filter_open);
             if state.not_admin {
                 let (color, tip) = if state.admin_limited {
                     (
@@ -173,11 +178,67 @@ fn layout_menu(ui: &mut Ui, look: &Look, has_saved: bool, actions: &mut Actions)
     );
 }
 
+/// The magnifier icon and, while open or filtering, the filter field to its
+/// left. Ctrl+F opens it; Escape or the icon clears and closes it.
+fn process_filter(ui: &mut Ui, look: &Look, filter: &mut String, open: &mut bool) {
+    let active = !filter.trim().is_empty();
+    let color = if active {
+        look.statusbar_hi
+    } else {
+        look.statusbar_fg
+    };
+    let tip = if active {
+        "Clear the process filter"
+    } else {
+        "Filter processes by name or PID (Ctrl+F)"
+    };
+    let icon = icon_button(ui, look, Icon::Search, color).on_hover_text(tip);
+    let field = ui.id().with("process-filter");
+    let shortcut = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F));
+    if shortcut {
+        *open = true;
+        ui.memory_mut(|m| m.request_focus(field));
+    } else if icon.clicked() {
+        if *open || active {
+            filter.clear();
+            *open = false;
+        } else {
+            *open = true;
+            ui.memory_mut(|m| m.request_focus(field));
+        }
+    }
+    if !*open && filter.is_empty() {
+        return;
+    }
+    ui.add_space(2.0);
+    let response = ui.add(
+        egui::TextEdit::singleline(filter)
+            .id(field)
+            .hint_text("Filter processes")
+            .desired_width(170.0)
+            .font(egui::TextStyle::Monospace)
+            .text_color(look.statusbar_fg)
+            .background_color(mix(look.statusbar_bg, look.statusbar_fg, 0.08))
+            .margin(egui::Margin::symmetric(6, 3)),
+    );
+    if response.lost_focus() {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            filter.clear();
+        }
+        // An empty field folds back into the icon.
+        if filter.trim().is_empty() {
+            filter.clear();
+            *open = false;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Icon {
     Settings,
     Layout,
     Shield,
+    Search,
 }
 
 fn icon_button(ui: &mut Ui, look: &Look, icon: Icon, color: Color32) -> egui::Response {
@@ -203,6 +264,14 @@ fn paint_icon(painter: &egui::Painter, c: Pos2, icon: Icon, color: Color32) {
     let stroke = Stroke::new(1.4_f32, color);
     match icon {
         Icon::Settings => gear(painter, c, stroke),
+        Icon::Search => {
+            let lens = c + vec2(-1.5, -1.5);
+            painter.circle_stroke(lens, 4.6, stroke);
+            painter.line_segment(
+                [lens + vec2(3.4, 3.4), c + vec2(6.0, 6.0)],
+                Stroke::new(1.8_f32, color),
+            );
+        }
         Icon::Layout => {
             // A window split into panels, like the dock.
             let r = Rect::from_center_size(c, vec2(15.0, 13.0));

@@ -585,6 +585,8 @@ struct Desktop {
     title_icon: Option<egui::TextureHandle>,
     /// Open process details windows.
     details: process_detail::Details,
+    /// The title bar's process filter field is shown.
+    filter_open: bool,
 }
 
 /// A layout the user chose to keep, with the window's position and size, so
@@ -638,7 +640,7 @@ impl Desktop {
             );
             Some(format!("{pct:.1}%"))
         });
-        let state = title_bar::State {
+        let mut state = title_bar::State {
             icon,
             own_cpu,
             uptime: status.map(|s| {
@@ -649,8 +651,10 @@ impl Desktop {
             not_admin: crate::collect::permissions::is_elevated() == Some(false),
             admin_limited: status.is_some_and(|s| s.admin_limited),
             has_saved_layout: self.saved.is_some(),
+            filter: &mut self.sorts.filter,
+            filter_open: &mut self.filter_open,
         };
-        let actions = title_bar::show(ui, look, &state);
+        let actions = title_bar::show(ui, look, &mut state);
         let ctx = ui.ctx().clone();
         if actions.settings {
             self.settings.toggle();
@@ -1867,6 +1871,9 @@ enum Ranking {
 struct Sorts {
     mem_ram: bool,
     io: IoSort,
+    /// Show only processes whose name contains this (any case), or whose
+    /// PID is this. Set from the title bar.
+    filter: String,
 }
 
 fn desc_f64(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
@@ -1882,7 +1889,16 @@ fn desc_f64(a: Option<f64>, b: Option<f64>) -> std::cmp::Ordering {
 /// Processes for one ranking, highest first, unknown values last, ties by
 /// PID. The System Idle Process (PID 0) is not a consumer and is omitted.
 fn ranked<'a>(procs: &'a [ProcInfo], ranking: Ranking, sorts: &Sorts) -> Vec<&'a ProcInfo> {
-    let mut list: Vec<&ProcInfo> = procs.iter().filter(|p| p.pid != 0).collect();
+    let needle = sorts.filter.trim().to_lowercase();
+    let mut list: Vec<&ProcInfo> = procs
+        .iter()
+        .filter(|p| p.pid != 0)
+        .filter(|p| {
+            needle.is_empty()
+                || p.name.to_lowercase().contains(&needle)
+                || p.pid.to_string() == needle
+        })
+        .collect();
     let io = |p: &ProcInfo| p.io_rates.map(|r| sorts.io.value(r));
     list.sort_by(|a, b| {
         let order = match ranking {
@@ -1910,6 +1926,13 @@ fn ranking_panel(
     open: &mut Option<u32>,
 ) -> f32 {
     let list = ranked(&sample.procs, ranking, sorts);
+    if list.is_empty() && !sorts.filter.trim().is_empty() {
+        ui.label(text(
+            format!("No process matches \"{}\"", sorts.filter.trim()),
+            look.label,
+        ));
+        return 0.0;
+    }
     let total_mem = sample.mem.stats.used + sample.mem.stats.available;
     let total_vram = sample.gpus.iter().map(|g| g.mem_total).max().unwrap_or(0);
     let cores = sample.cpu.core_count;
@@ -2440,6 +2463,7 @@ pub fn run_desktop() -> eframe::Result {
     let sorts = Sorts {
         mem_ram: config.proc.memory_sort_ram,
         io: config.proc.io_sort,
+        filter: String::new(),
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -2482,6 +2506,7 @@ pub fn run_desktop() -> eframe::Result {
                 config_saved: None,
                 title_icon: None,
                 details: process_detail::Details::default(),
+                filter_open: false,
             }))
         }),
     )
@@ -2606,6 +2631,38 @@ mod tests {
     }
 
     #[test]
+    fn filter_matches_name_in_any_case_or_exact_pid() {
+        let named = |pid, name: &str| ProcInfo {
+            pid,
+            name: name.to_owned(),
+            ..Default::default()
+        };
+        let procs = vec![
+            named(4, "System"),
+            named(120, "firefox.exe"),
+            named(1200, "Code.exe"),
+        ];
+        let pids = |filter: &str| -> Vec<u32> {
+            let sorts = Sorts {
+                mem_ram: false,
+                io: IoSort::Total,
+                filter: filter.to_owned(),
+            };
+            let mut pids: Vec<u32> = ranked(&procs, Ranking::Cpu, &sorts)
+                .iter()
+                .map(|p| p.pid)
+                .collect();
+            pids.sort_unstable();
+            pids
+        };
+        assert_eq!(pids(""), vec![4, 120, 1200]);
+        assert_eq!(pids("FIRE"), vec![120]);
+        assert_eq!(pids(" code "), vec![1200]);
+        assert_eq!(pids("120"), vec![120]);
+        assert!(pids("nothing").is_empty());
+    }
+
+    #[test]
     fn rankings_sort_descending_with_unknowns_last_and_skip_idle() {
         use crate::domain::process::IoRates;
         let proc = |pid, cpu_p, ram, mem, gpu_p, io: Option<(u64, u64)>| ProcInfo {
@@ -2626,6 +2683,7 @@ mod tests {
         let mut sorts = Sorts {
             mem_ram: false,
             io: IoSort::Total,
+            filter: String::new(),
         };
         let pids = |ranking, sorts: &Sorts| -> Vec<u32> {
             ranked(&procs, ranking, sorts)
@@ -2675,6 +2733,7 @@ mod tests {
                             sorts: &mut Sorts {
                                 mem_ram: false,
                                 io: IoSort::Total,
+                                filter: String::new(),
                             },
                             look: &look,
                             fits: &mut [Fit::default(); 10],

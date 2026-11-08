@@ -56,6 +56,7 @@ pub(super) fn show(ui: &mut Ui, look: &Look, sample: Option<&Sample>, config: &C
     let mut sorts = Sorts {
         mem_ram: config.proc.memory_sort_ram,
         io: config.proc.io_sort,
+        filter: String::new(),
     };
     panel(ui, look, column(2), "CPU", |ui| {
         ranking_panel(ui, look, sample, Ranking::Cpu, &mut sorts, &mut None);

@@ -100,6 +100,8 @@ struct Window {
     pid: u32,
     /// Full path of the executable, read once.
     path: Option<String>,
+    /// Why the last End process failed.
+    end_error: Option<String>,
 }
 
 /// The open details windows.
@@ -120,6 +122,7 @@ impl Details {
             self.windows.push(Window {
                 pid,
                 path: image_path(pid),
+                end_error: None,
             });
             if let Ok(mut history) = history.lock() {
                 history.keep.insert(pid);
@@ -147,7 +150,7 @@ impl Details {
         let mut closed = Vec::new();
         let mut open_parent = None;
         let screen = ctx.screen_rect();
-        for (i, window) in self.windows.iter().enumerate() {
+        for (i, window) in self.windows.iter_mut().enumerate() {
             let Some(track) = guard.track(window.pid) else {
                 closed.push(window.pid);
                 continue;
@@ -168,7 +171,7 @@ impl Details {
                         .show(ui, |ui| {
                             // Keep content clear of the floating scroll bar.
                             ui.set_max_width(ui.available_width() - 14.0);
-                            header(ui, look, track);
+                            header(ui, look, track, window);
                             ui.add_space(6.0);
                             graphs(ui, look, track, cores, interval_ms);
                             ui.add_space(4.0);
@@ -198,8 +201,8 @@ fn window_id(pid: u32) -> egui::Id {
     egui::Id::new(("process-details", pid))
 }
 
-/// The process name and whether it is still running.
-fn header(ui: &mut Ui, look: &Look, track: &Track) {
+/// The process name, whether it is still running, and End process.
+fn header(ui: &mut Ui, look: &Look, track: &Track, window: &mut Window) {
     let p = &track.last;
     ui.horizontal(|ui| {
         ui.label(text(&p.name, look.fg).strong().size(15.0));
@@ -210,7 +213,66 @@ fn header(ui: &mut Ui, look: &Look, track: &Track) {
             (p.state.to_string().to_lowercase(), look.label)
         };
         ui.label(text(state, color));
+        if track.exited {
+            return;
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button(text("End process", look.warn))
+                .on_hover_text("Stop this process immediately, like Task Manager's End task")
+                .clicked()
+            {
+                window.end_error = end_process(p.pid).err();
+            }
+        });
     });
+    if let Some(error) = &window.end_error {
+        ui.label(text(
+            format!("Could not end the process: {error}"),
+            look.warn,
+        ));
+    }
+}
+
+/// Terminate `pid`. Refuses the System pseudo-processes and Windows'
+/// critical processes, whose end would crash the machine.
+fn end_process(pid: u32) -> Result<(), String> {
+    use windows::Win32::Foundation::E_ACCESSDENIED;
+    use windows::Win32::System::Threading::{
+        IsProcessCritical, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        TerminateProcess,
+    };
+    if pid == 0 || pid == 4 {
+        return Err("Windows does not allow ending this process".to_owned());
+    }
+    let explain = |e: windows::core::Error| {
+        if e.code() == E_ACCESSDENIED {
+            "access denied. It may belong to another user or run elevated; \
+             run rztop as administrator to end it."
+                .to_owned()
+        } else {
+            e.message()
+        }
+    };
+    // SAFETY: the handle is checked and closed by OwnedHandle; `critical`
+    // outlives the call that writes it.
+    unsafe {
+        let handle = OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+            false,
+            pid,
+        )
+        .map_err(explain)?;
+        let handle = crate::collect::win::OwnedHandle::new(handle)
+            .ok_or_else(|| "the process could not be opened".to_owned())?;
+        let mut critical = windows::core::BOOL::default();
+        if IsProcessCritical(handle.get(), &mut critical).is_ok() && critical.as_bool() {
+            return Err(
+                "it is a critical Windows process; ending it would crash Windows".to_owned(),
+            );
+        }
+        TerminateProcess(handle.get(), 1).map_err(explain)
+    }
 }
 
 /// The facts table. Returns the parent's PID when its link was clicked.
@@ -358,16 +420,14 @@ fn graphs(ui: &mut Ui, look: &Look, track: &Track, cores: usize, interval_ms: u6
     let width = ui.available_width();
     let cols = graph_columns(width);
     let span = cols.min(track.cpu.len()) as u64 * interval_ms / 1000;
-    ui.label(
-        text(
-            format!(
-                "Last {} · since the process appeared or rztop started",
-                crate::tools::sec_to_dhms(span, true, false)
-            ),
-            look.label,
-        )
-        .size(11.5),
-    );
+    let span = crate::tools::sec_to_dhms(span, true, false);
+    // Until the graphs fill, they hold everything rztop has seen of it.
+    let caption = if track.cpu.len() < cols {
+        format!("Last {span} · since the process appeared or rztop started")
+    } else {
+        format!("Last {span}")
+    };
+    ui.label(text(caption, look.label).size(11.5));
     ui.add_space(6.0);
 
     // CPU in the same units as the tables (one core or all cores).
