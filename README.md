@@ -39,7 +39,7 @@ began on 2026-11-02; modified files are marked with a `Modified for rztop` heade
 - **Layout controls** in the status bar: **save** stores the current arrangement and window position, **load** restores it, **reset** returns to the default arrangement sized to fit the window.
 - **Status bar**: settings, refresh interval (click `-` / `+`), rztop's own CPU usage, uptime, clock, and a warning when rztop is not elevated and some data is unavailable.
 - **Settings window** (`[settings]` in the status bar): theme, units and clock; refresh interval and meter scales; network adapter and graph scaling; disk filter; log level. Changes apply immediately and are saved to `rztop.toml`.
-- **43 bundled themes** shared with rtop, picked from thumbnails that show each theme's colours.
+- **48 bundled themes**, picked from thumbnails that show each theme's colours. The default is Gruvbox Material on a near-black background; most of the others come from rtop.
 - **Theme editor**: customize a theme's base colours and the start, middle and end of each colour role while the whole app previews it. Saved themes go to `%APPDATA%\rztop\themes\` in rtop's theme format, so rtop can load them too.
 - **Consistent colours**: a metric is coloured by what it measures, whichever panel shows it. Usage, temperature, power, clocks, how full something is, and incoming / outgoing data each have their own gradient from the theme.
 - Sizes are labelled MB and GB like Task Manager (1024-based; 1000-based is a setting).
@@ -101,7 +101,7 @@ An rtop `rtop.toml` can be copied over; keys the desktop app does not use are
 ignored. The keys it reads (Settings edits all of them except `memory_sort_ram` and `io_sort`):
 
 ```toml
-color_theme = "default"        # any bundled theme, e.g. "dracula", "nord", "tokyo_night"
+color_theme = "default"        # any bundled or saved theme, e.g. "dracula", "rose_pine", "tokyo_night"
 update_ms = 2000               # refresh interval, 100..86400000
 base_10_sizes = false
 temp_scale = "celsius"         # celsius, fahrenheit, kelvin, rankine

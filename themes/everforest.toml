@@ -1,0 +1,113 @@
+# Everforest (custom #16161d background).
+
+[colors]
+main_bg = "#16161d"
+main_fg = "#d3c6aa"
+title = "#d3c6aa"
+hi_fg = "#e67e80"
+selected_bg = "#3a515d"
+selected_fg = "#dbbc7f"
+graph_text = "#7a8478"
+meter_bg = "#3d484d"
+proc_tree_fg = "#859289"
+cpu_widget = "#859289"
+mem_widget = "#859289"
+net_widget = "#859289"
+proc_widget = "#859289"
+gpu_widget = "#859289"
+disk_widget = "#859289"
+help_box = "#475258"
+options_box = "#475258"
+followed_bg = "#3a515d"
+followed_fg = "#83c092"
+inactive_fg = "#7a8478"
+statusbar_bg = "#16161d"
+statusbar_fg = "#d3c6aa"
+statusbar_hi = "#83c092"
+statusbar_sep = "#475258"
+data_label_fg = "#859289"
+
+[gradients.cpu_upper]
+start = "#a7c080"
+mid = "#dbbc7f"
+end = "#e67e80"
+
+[gradients.cpu_lower]
+start = "#7fbbb3"
+mid = "#83c092"
+end = "#d699b6"
+
+[gradients.temp]
+start = "#83c092"
+mid = "#dbbc7f"
+end = "#e67e80"
+
+[gradients.free]
+start = "#859289"
+mid = "#d699b6"
+end = "#7fbbb3"
+
+[gradients.cached]
+start = "#d3c6aa"
+mid = "#dbbc7f"
+end = "#e69875"
+
+[gradients.available]
+start = "#859289"
+mid = "#d699b6"
+end = "#7fbbb3"
+
+[gradients.used]
+start = "#7fbbb3"
+mid = "#83c092"
+end = "#d699b6"
+
+[gradients.download]
+start = "#83c092"
+mid = "#7fbbb3"
+end = "#d699b6"
+
+[gradients.upload]
+start = "#dbbc7f"
+mid = "#e69875"
+end = "#e67e80"
+
+[gradients.process]
+start = "#a7c080"
+mid = "#dbbc7f"
+end = "#e67e80"
+
+[gradients.gpu]
+start = "#a7c080"
+mid = "#dbbc7f"
+end = "#e67e80"
+
+[gradients.gpu_clock]
+start = "#7fbbb3"
+mid = "#83c092"
+end = "#a7c080"
+
+[gradients.gpu_power]
+start = "#dbbc7f"
+mid = "#e69875"
+end = "#e67e80"
+
+[gradients.gpu_vram]
+start = "#7fbbb3"
+mid = "#83c092"
+end = "#d699b6"
+
+[gradients.disk_read]
+start = "#83c092"
+mid = "#7fbbb3"
+end = "#d699b6"
+
+[gradients.disk_write]
+start = "#dbbc7f"
+mid = "#e69875"
+end = "#e67e80"
+
+[gradients.disk_busy]
+start = "#a7c080"
+mid = "#dbbc7f"
+end = "#e67e80"

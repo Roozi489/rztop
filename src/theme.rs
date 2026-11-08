@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn palette_by_name_and_unknown_falls_back_to_default() {
-        assert_eq!(palette("default").colors.main_fg, Rgb(0xcc, 0xcc, 0xcc));
+        assert_eq!(palette("default").colors.main_fg, Rgb(0xd4, 0xbe, 0x98));
         assert_eq!(
             palette("no-such-theme").colors.main_fg,
             palette("default").colors.main_fg
