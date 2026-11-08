@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-07: adapted for the rztop desktop app.
 //! Typed theme palette definitions.
 //!
 //! Each theme is a TOML file parsed into a [`ThemePalette`] via serde.

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-04: adapted for the rztop desktop app.
 use unicode_width::UnicodeWidthStr;
 
 /// Returns the display width of a string, ignoring ANSI escape codes.

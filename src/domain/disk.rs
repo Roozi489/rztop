@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-04: adapted for the rztop desktop app.
 use std::collections::VecDeque;
 
 /// Parsed representation of the user-supplied `disk_filter` config list.

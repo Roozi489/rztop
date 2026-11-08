@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-04: adapted for the rztop desktop app.
 //! Typed enums for closed-set config fields.
 //!
 //! Each enum follows the same pattern:

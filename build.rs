@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-07: adapted for the rztop desktop app.
 //! Build script: generates `bundled_themes.rs` containing the
 //! `BUNDLED_THEMES` array from every `.toml` file under `themes/`.
 //!

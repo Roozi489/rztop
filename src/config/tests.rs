@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-05: adapted for the rztop desktop app.
 //! Integration tests for Config (load/write/validate and integer bounds).
 //!
 //! Lives in its own file purely so mod.rs does not carry ~700 lines of

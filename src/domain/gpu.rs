@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-04: adapted for the rztop desktop app.
 use std::collections::VecDeque;
 
 /// GPU usage percentage histories.

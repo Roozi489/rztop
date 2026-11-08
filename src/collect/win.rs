@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-10-23: adapted for the rztop desktop app.
 use windows::Win32::Foundation::{CloseHandle, FreeLibrary, HANDLE, HMODULE};
 use windows::Win32::System::Registry::{HKEY, RegCloseKey};
 

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-04: adapted for the rztop desktop app.
 use crate::collect::CollectStatus;
 use crate::collect::win::OwnedLibrary;
 use std::ffi::{c_char, c_void};

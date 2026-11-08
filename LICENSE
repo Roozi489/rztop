@@ -1,4 +1,8 @@
-rtop - A terminal-based system monitor for Windows
+rztop - A desktop system monitor for Windows
+Copyright (C) 2026  Roozi489
+
+rztop is a modified version of rtop, a terminal-based system monitor for
+Windows: https://github.com/freddiehaddad/rtop
 Copyright (C) 2026  Freddie Haddad
 
 This program is free software; you can redistribute it and/or modify

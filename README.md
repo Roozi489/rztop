@@ -150,4 +150,4 @@ proc_per_core = false          # 100% = one logical core
 
 ## License
 
-[GPL-2.0-or-later](LICENSE). The original rtop code is copyright (C) 2026 Freddie Haddad.
+[GPL-2.0-or-later](LICENSE). rztop is copyright (C) 2026 Roozi489; the rtop code it is based on is copyright (C) 2026 Freddie Haddad. Files changed for rztop say so in their header.
