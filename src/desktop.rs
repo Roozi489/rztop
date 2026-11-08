@@ -585,8 +585,6 @@ struct Desktop {
     title_icon: Option<egui::TextureHandle>,
     /// Open process details windows.
     details: process_detail::Details,
-    /// The title bar's process filter field is shown.
-    filter_open: bool,
 }
 
 /// A layout the user chose to keep, with the window's position and size, so
@@ -652,7 +650,6 @@ impl Desktop {
             admin_limited: status.is_some_and(|s| s.admin_limited),
             has_saved_layout: self.saved.is_some(),
             filter: &mut self.sorts.filter,
-            filter_open: &mut self.filter_open,
         };
         let actions = title_bar::show(ui, look, &mut state);
         let ctx = ui.ctx().clone();
@@ -2506,7 +2503,6 @@ pub fn run_desktop() -> eframe::Result {
                 config_saved: None,
                 title_icon: None,
                 details: process_detail::Details::default(),
-                filter_open: false,
             }))
         }),
     )

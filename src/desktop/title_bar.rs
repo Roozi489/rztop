@@ -1,6 +1,6 @@
 //! The window's own title bar, drawn in the theme's colours in place of the
-//! system one: app icon and name, rztop's own CPU usage and
-//! the uptime, then icon buttons for elevation, layout and
+//! system one: app icon, name and the process filter, rztop's own CPU
+//! usage and the uptime, then icon buttons for elevation, layout and
 //! settings, and the minimize / maximize / close buttons. Also lets the
 //! window be resized from its edges, which a window without system
 //! decorations no longer gets from Windows.
@@ -42,8 +42,6 @@ pub(super) struct State<'a> {
     pub(super) has_saved_layout: bool,
     /// The process name filter, edited in the bar.
     pub(super) filter: &'a mut String,
-    /// The filter field is shown.
-    pub(super) filter_open: &'a mut bool,
 }
 
 pub(super) fn show(ui: &mut Ui, look: &Look, state: &mut State) -> Actions {
@@ -66,6 +64,8 @@ pub(super) fn show(ui: &mut Ui, look: &Look, state: &mut State) -> Actions {
         ui.add(egui::Image::new(state.icon).fit_to_exact_size(vec2(16.0, 16.0)));
         ui.add_space(8.0);
         ui.add(egui::Label::new(text("rztop", look.statusbar_fg)).selectable(false));
+        ui.add_space(14.0);
+        process_filter(ui, look, state.filter);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Right to left: the first item drawn is the rightmost.
@@ -90,7 +90,6 @@ pub(super) fn show(ui: &mut Ui, look: &Look, state: &mut State) -> Actions {
                 .on_hover_text("Settings")
                 .clicked();
             layout_menu(ui, look, state.has_saved_layout, &mut actions);
-            process_filter(ui, look, state.filter, state.filter_open);
             if state.not_admin {
                 let (color, tip) = if state.admin_limited {
                     (
@@ -178,59 +177,106 @@ fn layout_menu(ui: &mut Ui, look: &Look, has_saved: bool, actions: &mut Actions)
     );
 }
 
-/// The magnifier icon and, while open or filtering, the filter field to its
-/// left. Ctrl+F opens it; Escape or the icon clears and closes it.
-fn process_filter(ui: &mut Ui, look: &Look, filter: &mut String, open: &mut bool) {
+/// Width of the process filter field.
+const FILTER_W: f32 = 200.0;
+const FILTER_H: f32 = 22.0;
+
+/// The process filter field: a magnifier inside on the left, a clear
+/// button inside on the right while it holds text. Ctrl+F focuses it;
+/// Escape clears it.
+fn process_filter(ui: &mut Ui, look: &Look, filter: &mut String) {
+    let field = ui.id().with("process-filter");
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+        ui.memory_mut(|m| m.request_focus(field));
+    }
+    let (rect, frame) = ui.allocate_exact_size(vec2(FILTER_W, FILTER_H), Sense::click());
+    if frame.clicked() {
+        ui.memory_mut(|m| m.request_focus(field));
+    }
+    let focused = ui.memory(|m| m.has_focus(field));
     let active = !filter.trim().is_empty();
-    let color = if active {
+    let painter = ui.painter_at(rect.expand(1.0));
+    let border = if focused {
+        look.statusbar_hi
+    } else {
+        mix(look.statusbar_bg, look.statusbar_fg, 0.25)
+    };
+    painter.rect(
+        rect,
+        CornerRadius::same(4),
+        mix(look.statusbar_bg, look.statusbar_fg, 0.08),
+        Stroke::new(1.0_f32, border),
+        egui::StrokeKind::Inside,
+    );
+    let icon_color = if active {
+        look.statusbar_hi
+    } else {
+        look.statusbar_sep
+    };
+    paint_icon(
+        &painter,
+        pos2(rect.left() + 13.0, rect.center().y),
+        Icon::Search,
+        icon_color,
+    );
+
+    let text_rect = Rect::from_min_max(
+        pos2(rect.left() + 24.0, rect.top()),
+        pos2(rect.right() - 22.0, rect.bottom()),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(text_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let response = child.add(
+        egui::TextEdit::singleline(filter)
+            .id(field)
+            .hint_text("Filter (Ctrl+F)")
+            .desired_width(text_rect.width())
+            .font(egui::TextStyle::Monospace)
+            .text_color(look.statusbar_fg)
+            .frame(false)
+            .margin(egui::Margin::ZERO),
+    );
+    let response = response
+        .on_hover_text("Show processes whose name contains this, or with this PID (Ctrl+F)");
+    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        filter.clear();
+    }
+    if !filter.is_empty() && clear_button(ui, look, rect) {
+        filter.clear();
+        ui.memory_mut(|m| m.request_focus(field));
+    }
+}
+
+/// A small cross at the right end of the filter field; true when clicked.
+fn clear_button(ui: &mut Ui, look: &Look, field: Rect) -> bool {
+    let rect = Rect::from_center_size(
+        pos2(field.right() - 12.0, field.center().y),
+        vec2(16.0, 16.0),
+    );
+    let response = ui
+        .interact(rect, ui.id().with("process-filter-clear"), Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Clear the filter");
+    let painter = ui.painter_at(rect);
+    let color = if response.hovered() {
+        painter.circle_filled(
+            rect.center(),
+            8.0,
+            mix(look.statusbar_bg, look.statusbar_fg, 0.18),
+        );
         look.statusbar_hi
     } else {
         look.statusbar_fg
     };
-    let tip = if active {
-        "Clear the process filter"
-    } else {
-        "Filter processes by name or PID (Ctrl+F)"
-    };
-    let icon = icon_button(ui, look, Icon::Search, color).on_hover_text(tip);
-    let field = ui.id().with("process-filter");
-    let shortcut = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F));
-    if shortcut {
-        *open = true;
-        ui.memory_mut(|m| m.request_focus(field));
-    } else if icon.clicked() {
-        if *open || active {
-            filter.clear();
-            *open = false;
-        } else {
-            *open = true;
-            ui.memory_mut(|m| m.request_focus(field));
-        }
-    }
-    if !*open && filter.is_empty() {
-        return;
-    }
-    ui.add_space(2.0);
-    let response = ui.add(
-        egui::TextEdit::singleline(filter)
-            .id(field)
-            .hint_text("Filter processes")
-            .desired_width(170.0)
-            .font(egui::TextStyle::Monospace)
-            .text_color(look.statusbar_fg)
-            .background_color(mix(look.statusbar_bg, look.statusbar_fg, 0.08))
-            .margin(egui::Margin::symmetric(6, 3)),
-    );
-    if response.lost_focus() {
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            filter.clear();
-        }
-        // An empty field folds back into the icon.
-        if filter.trim().is_empty() {
-            filter.clear();
-            *open = false;
-        }
-    }
+    let r = 3.5;
+    let c = rect.center();
+    let stroke = egui::Stroke::new(1.4_f32, color);
+    painter.line_segment([c + vec2(-r, -r), c + vec2(r, r)], stroke);
+    painter.line_segment([c + vec2(-r, r), c + vec2(r, -r)], stroke);
+    response.clicked()
 }
 
 #[derive(Clone, Copy)]
