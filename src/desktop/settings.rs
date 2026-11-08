@@ -182,7 +182,7 @@ impl Settings {
                                 Section::Appearance => {
                                     self.appearance(ui, config, look, &mut changes)
                                 }
-                                Section::Data => data(ui, config, look, &mut changes),
+                                Section::Data => data(ui, config, look, info, &mut changes),
                                 Section::Network => {
                                     self.network(ui, config, look, info, &mut changes)
                                 }
@@ -401,7 +401,7 @@ impl Settings {
     }
 }
 
-fn data(ui: &mut Ui, config: &mut Config, look: &Look, ch: &mut Changes) {
+fn data(ui: &mut Ui, config: &mut Config, look: &Look, info: &Context, ch: &mut Changes) {
     heading(ui, look, "Refresh");
     grid(ui, "refresh", |ui| {
         label(ui, look, "Interval");
@@ -514,6 +514,41 @@ fn data(ui: &mut Ui, config: &mut Config, look: &Look, ch: &mut Changes) {
             )
             .changed();
         ui.end_row();
+
+        label(ui, look, "History");
+        ui.horizontal(|ui| {
+            ch.any |= ui
+                .add(
+                    egui::DragValue::new(&mut config.proc.proc_history_min)
+                        .range(0..=240)
+                        .speed(0.2)
+                        .suffix(" min"),
+                )
+                .changed();
+            ui.label(text(
+                "of readings for every process, for the details window graphs",
+                look.label,
+            ));
+        });
+        ui.end_row();
+        let minutes = config.proc.proc_history_min;
+        let hint = if minutes == 0 {
+            format!(
+                "Off: graphs start when a details window opens and keep {} min",
+                super::process_detail::OPEN_WINDOW_MIN
+            )
+        } else {
+            let interval = u64::try_from(config.refresh.update_ms).unwrap_or(1000);
+            let samples = super::process_detail::samples_for(minutes, interval);
+            let procs = info.sample.map_or(0, |s| s.procs.len());
+            // Five 4-byte series per process; GPU users add two more.
+            let bytes = (procs * samples * 5 * 4) as u64;
+            format!(
+                "{samples} readings each; about {} for the {procs} processes now running",
+                look.bytes(bytes)
+            )
+        };
+        hint_row(ui, look, &hint);
     });
 }
 

@@ -8,8 +8,9 @@ use crate::domain::process::{ProcInfo, display_cpu_percent};
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// Samples kept per process: 15 minutes at the default 1 s interval.
-const KEEP: usize = 900;
+/// Minutes of history kept for a process with an open window when
+/// background recording is off.
+pub(super) const OPEN_WINDOW_MIN: i64 = 15;
 const GRAPH_H: f32 = 64.0;
 
 /// One process's recent readings, oldest first. Every process gets one,
@@ -36,7 +37,13 @@ pub(super) struct Track {
 }
 
 impl Track {
-    fn push(&mut self, p: &ProcInfo) {
+    /// Record `p`, keeping at most `limit` readings per series.
+    fn push(&mut self, p: &ProcInfo, limit: usize) {
+        self.last = p.clone();
+        self.exited = false;
+        if limit == 0 {
+            return;
+        }
         let io = p
             .io_rates
             .unwrap_or(crate::domain::process::IoRates { read: 0, write: 0 });
@@ -47,7 +54,7 @@ impl Track {
             (&mut self.read, io.read as f32),
             (&mut self.write, io.write as f32),
         ] {
-            append(series, value);
+            append(series, value, limit);
         }
         self.has_gpu |= p.gpu_p.is_some_and(|v| v > 0.0) || p.gpu_mem.is_some_and(|v| v > 0);
         if self.has_gpu {
@@ -64,21 +71,37 @@ impl Track {
                     series.reserve_exact(earlier - series.len() + 1);
                     series.resize(earlier, 0.0);
                 }
-                append(series, value);
+                append(series, value, limit);
             }
         }
-        self.last = p.clone();
-        self.exited = false;
+    }
+
+    /// Drop readings beyond `limit` and give back the spare memory.
+    fn trim(&mut self, limit: usize) {
+        for series in [
+            &mut self.cpu,
+            &mut self.ram,
+            &mut self.commit,
+            &mut self.read,
+            &mut self.write,
+            &mut self.gpu,
+            &mut self.vram,
+        ] {
+            let excess = series.len().saturating_sub(limit);
+            series.drain(..excess);
+            series.shrink_to_fit();
+        }
     }
 }
 
-/// Add `value` to a series, dropping the oldest past `KEEP`. Grows the
-/// buffer by doubling, but never past `KEEP`.
-fn append(series: &mut VecDeque<f32>, value: f32) {
-    if series.len() >= KEEP {
+/// Add `value` to a series, dropping the oldest past `limit`. Grows the
+/// buffer by doubling, but never past `limit`.
+fn append(series: &mut VecDeque<f32>, value: f32, limit: usize) {
+    while series.len() >= limit {
         series.pop_front();
-    } else if series.len() == series.capacity() {
-        let grow = series.len().max(8).min(KEEP - series.len());
+    }
+    if series.len() == series.capacity() {
+        let grow = series.len().max(8).min(limit - series.len());
         series.reserve_exact(grow);
     }
     series.push_back(value);
@@ -95,9 +118,47 @@ pub(super) struct History {
     tracks: HashMap<u32, Track>,
     /// Processes with a details window open: their tracks outlive them.
     keep: HashSet<u32>,
+    /// Readings kept per series for every process; 0 records none.
+    limit: usize,
+    /// Readings kept for processes in `keep`.
+    open_limit: usize,
+}
+
+/// How many readings `minutes` of history is at `interval_ms`.
+pub(super) fn samples_for(minutes: i64, interval_ms: u64) -> usize {
+    let ms = u64::try_from(minutes.max(0)).unwrap_or(0) * 60_000;
+    usize::try_from(ms.div_ceil(interval_ms.max(1))).unwrap_or(usize::MAX)
 }
 
 impl History {
+    /// Keep `minutes` of readings for every process at `interval_ms`;
+    /// 0 keeps them only for processes with a window open.
+    pub(super) fn set_length(&mut self, minutes: i64, interval_ms: u64) {
+        let limit = samples_for(minutes, interval_ms);
+        let open_limit = if limit == 0 {
+            samples_for(OPEN_WINDOW_MIN, interval_ms)
+        } else {
+            limit
+        };
+        if (limit, open_limit) == (self.limit, self.open_limit) {
+            return;
+        }
+        self.limit = limit;
+        self.open_limit = open_limit;
+        for (pid, track) in &mut self.tracks {
+            track.trim(if self.keep.contains(pid) {
+                open_limit
+            } else {
+                limit
+            });
+        }
+    }
+
+    /// Recording for every process is off.
+    pub(super) fn off(&self) -> bool {
+        self.limit == 0
+    }
+
     /// Add one sample. A PID reused by a new process starts a new track.
     pub(super) fn record(&mut self, procs: &[ProcInfo]) {
         let mut seen = HashSet::with_capacity(procs.len());
@@ -107,7 +168,12 @@ impl History {
             if track.last.started != p.started || track.last.name != p.name || track.exited {
                 *track = Track::default();
             }
-            track.push(p);
+            let limit = if self.keep.contains(&p.pid) {
+                self.open_limit
+            } else {
+                self.limit
+            };
+            track.push(p, limit);
         }
         let keep = &self.keep;
         self.tracks.retain(|pid, track| {
@@ -176,6 +242,7 @@ impl Details {
             return;
         };
         let cores = sample.map_or(1, |s| s.cpu.core_count);
+        let off = guard.off();
         let mut closed = Vec::new();
         let mut open_parent = None;
         let screen = ctx.screen_rect();
@@ -202,7 +269,7 @@ impl Details {
                             ui.set_max_width(ui.available_width() - 14.0);
                             header(ui, look, track, window);
                             ui.add_space(6.0);
-                            graphs(ui, look, track, cores, interval_ms);
+                            graphs(ui, look, track, cores, interval_ms, off);
                             ui.add_space(4.0);
                             ui.label(text("Details", look.fg).strong());
                             ui.add_space(4.0);
@@ -215,8 +282,12 @@ impl Details {
                 closed.push(window.pid);
             }
         }
+        let limit = guard.limit;
         for pid in &closed {
             guard.keep.remove(pid);
+            if let Some(track) = guard.tracks.get_mut(pid) {
+                track.trim(limit);
+            }
         }
         drop(guard);
         self.windows.retain(|w| !closed.contains(&w.pid));
@@ -451,13 +522,16 @@ fn one_line(ui: &mut Ui, look: &Look, value: &str, button: &str) -> bool {
     clicked
 }
 /// The graphs: CPU, memory, I/O and, when the process uses one, the GPU.
-fn graphs(ui: &mut Ui, look: &Look, track: &Track, cores: usize, interval_ms: u64) {
+/// `off`: only processes with a window open are recorded.
+fn graphs(ui: &mut Ui, look: &Look, track: &Track, cores: usize, interval_ms: u64, off: bool) {
     let width = ui.available_width();
     let cols = graph_columns(width);
     let span = cols.min(track.cpu.len()) as u64 * interval_ms / 1000;
     let span = crate::tools::sec_to_dhms(span, true, false);
     // Until the graphs fill, they hold everything rztop has seen of it.
-    let caption = if track.cpu.len() < cols {
+    let caption = if off && track.cpu.len() < cols {
+        format!("Last {span} · since this window opened")
+    } else if track.cpu.len() < cols {
         format!("Last {span} · since the process appeared or rztop started")
     } else {
         format!("Last {span}")
@@ -771,6 +845,34 @@ fn image_path(pid: u32) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A history keeping 15 minutes at 1 s.
+    fn recording() -> History {
+        let mut history = History::default();
+        history.set_length(15, 1000);
+        history
+    }
+
+    #[test]
+    fn shorter_history_trims_and_off_records_only_open_windows() {
+        let mut history = recording();
+        for _ in 0..100 {
+            history.record(&[proc(4, "a.exe", 1, 1.0), proc(8, "b.exe", 1, 1.0)]);
+        }
+        // One minute at 2 s is 30 readings.
+        history.set_length(1, 2000);
+        assert_eq!(history.track(4).map(|t| t.cpu.len()), Some(30));
+
+        history.keep.insert(8);
+        history.set_length(0, 1000);
+        assert!(history.off());
+        assert_eq!(history.track(4).map(|t| t.cpu.len()), Some(0));
+        assert_eq!(history.track(8).map(|t| t.cpu.len()), Some(30));
+        history.record(&[proc(4, "a.exe", 1, 1.0), proc(8, "b.exe", 1, 1.0)]);
+        // Still known, for opening a window, but nothing recorded.
+        assert!(history.track(4).is_some_and(|t| t.cpu.is_empty()));
+        assert_eq!(history.track(8).map(|t| t.cpu.len()), Some(31));
+    }
+
     fn proc(pid: u32, name: &str, started: u64, cpu_p: f64) -> ProcInfo {
         ProcInfo {
             pid,
@@ -783,7 +885,7 @@ mod tests {
 
     #[test]
     fn history_follows_processes_and_resets_on_pid_reuse() {
-        let mut history = History::default();
+        let mut history = recording();
         history.record(&[proc(4, "a.exe", 1, 10.0), proc(8, "b.exe", 1, 0.0)]);
         history.record(&[proc(4, "a.exe", 1, 20.0), proc(8, "b.exe", 1, 0.0)]);
         assert_eq!(history.track(4).map(|t| t.cpu.len()), Some(2));
@@ -807,19 +909,21 @@ mod tests {
 
     #[test]
     fn history_is_capped() {
-        let mut history = History::default();
-        for _ in 0..KEEP + 10 {
+        let mut history = recording();
+        let keep = samples_for(15, 1000);
+        assert_eq!(keep, 900);
+        for _ in 0..keep + 10 {
             history.record(&[proc(4, "a.exe", 1, 1.0)]);
         }
         let track = history.track(4).expect("tracked");
-        assert_eq!(track.ram.len(), KEEP);
+        assert_eq!(track.ram.len(), keep);
         // Grown to exactly the cap, not the next power of two.
-        assert_eq!(track.ram.capacity(), KEEP);
+        assert_eq!(track.ram.capacity(), keep);
     }
 
     #[test]
     fn gpu_series_start_when_the_gpu_is_used() {
-        let mut history = History::default();
+        let mut history = recording();
         for _ in 0..3 {
             history.record(&[proc(4, "a.exe", 1, 1.0)]);
         }

@@ -50,6 +50,7 @@ int_keys! {
     ProcUpdateMs => "proc_update_ms" => refresh.proc_update_ms,
     NetDownload => "net_download" => net.net_download,
     NetUpload => "net_upload" => net.net_upload,
+    ProcHistoryMin => "proc_history_min" => proc.proc_history_min,
 }
 
 impl IntKey {
@@ -67,6 +68,7 @@ impl IntKey {
             Self::GpuPowerMaxWatts => 0..=10_000,
             Self::GpuClockMaxMhz | Self::CpuClockMaxMhz => 0..=10_000,
             Self::SwapMaxMib => 0..=1_000_000_000,
+            Self::ProcHistoryMin => 0..=240,
         }
     }
 

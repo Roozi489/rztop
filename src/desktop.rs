@@ -585,6 +585,8 @@ struct Desktop {
     title_icon: Option<egui::TextureHandle>,
     /// Open process details windows.
     details: process_detail::Details,
+    /// The process history length last applied: minutes and interval.
+    history_len: Option<(i64, u64)>,
 }
 
 /// A layout the user chose to keep, with the window's position and size, so
@@ -715,6 +717,16 @@ impl Desktop {
             ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(app_icon(
                 &self.look,
             )))));
+        }
+        let wanted = (
+            self.config.proc.proc_history_min,
+            self.monitor.interval.load(Relaxed),
+        );
+        if self.history_len != Some(wanted)
+            && let Ok(mut history) = self.monitor.history.lock()
+        {
+            history.set_length(wanted.0, wanted.1);
+            self.history_len = Some(wanted);
         }
         if changes.interval {
             let ms = u64::try_from(self.config.refresh.update_ms).unwrap_or(1000);
@@ -2503,6 +2515,7 @@ pub fn run_desktop() -> eframe::Result {
                 config_saved: None,
                 title_icon: None,
                 details: process_detail::Details::default(),
+                history_len: None,
             }))
         }),
     )

@@ -247,6 +247,9 @@ pub struct ProcConfig {
     pub proc_aggregate: bool,
     pub proc_colors: bool,
     pub proc_mem_bytes: bool,
+    /// Minutes of readings kept for every process, for the details
+    /// windows' graphs. 0 records only processes with a window open.
+    pub proc_history_min: i64,
 }
 
 /// GPU display settings. The override changes only the meter scale.
@@ -267,6 +270,7 @@ impl Default for ProcConfig {
             proc_aggregate: false,
             proc_colors: true,
             proc_mem_bytes: true,
+            proc_history_min: 15,
         }
     }
 }

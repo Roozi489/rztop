@@ -34,6 +34,7 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "gpu_power_max_watts",
     "swap_max_mib",
     "proc_per_core",
+    "proc_history_min",
     "net_iface",
     "net_auto",
     "net_sync",

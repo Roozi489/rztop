@@ -36,12 +36,12 @@ began on 2026-11-02; modified files are marked with a `Modified for rztop` heade
 ¹ Needs [PawnIO](#cpu-temperature-and-power) and administrator rights.
 
 - **Dockable layout**: drag a panel's caption onto another panel to split it or group the two as tabs; drag separators to resize.
-- **Process details**: click a process in any table to open a window with graphs of its CPU, memory (RAM and commit), I/O and GPU use over the last minutes, plus its parent, user, path, command line, uptime, priority, threads and totals. rztop keeps a short history for every process (up to 900 samples), so a window shows the recent past as soon as it opens, and stays open after its process exits. **End process** in the window ends it at once; critical Windows processes are refused, and processes of other users need rztop to run as administrator.
+- **Process details**: click a process in any table to open a window with graphs of its CPU, memory (RAM and commit), I/O and GPU use over the last minutes, plus its parent, user, path, command line, uptime, priority, threads and totals. rztop keeps a history for every process (15 minutes by default, adjustable in Settings, or off to record only processes with a window open), so a window shows the recent past as soon as it opens, and stays open after its process exits. **End process** in the window ends it at once; critical Windows processes are refused, and processes of other users need rztop to run as administrator.
 - **Process filter** (the field next to the name in the title bar, or Ctrl+F): shows only the processes whose name contains the text, or whose PID matches it, in every process table. Escape or its × button clears it.
 - **Title bar** in the theme's colours, replacing the system one to save a row: the process filter next to the name, rztop's own CPU usage and the uptime, then icons for elevation, layout and settings. Drag it to move the window, double-click it to maximize, and resize from any edge.
 - **Layout menu** (the layout icon): **Save layout** stores the current arrangement and window position, **Load saved layout** restores it, **Reset layout** returns to the default arrangement sized to fit the window.
 - **Run as administrator** (the shield icon, shown when rztop is not elevated): restarts rztop elevated. It turns to the warning colour when some data is unavailable without elevation.
-- **Settings window** (the gear icon): theme, with a large live preview of the theme under the pointer; refresh interval, units and meter scales; network adapter and graph scaling; disk filter; log level. Changes apply immediately and are saved to `rztop.toml`.
+- **Settings window** (the gear icon): theme, with a large live preview of the theme under the pointer; refresh interval, process history length, units and meter scales; network adapter and graph scaling; disk filter; log level. Changes apply immediately and are saved to `rztop.toml`.
 - **48 bundled themes**, picked from thumbnails that show each theme's colours. The default is Gruvbox Material on a near-black background; most of the others come from rtop.
 - **Theme editor**: customize a theme's base colours and the start, middle and end of each colour role while the whole app previews it. Saved themes go to `%APPDATA%\rztop\themes\` in rtop's theme format, so rtop can load them too.
 - **Consistent colours**: a metric is coloured by what it measures, whichever panel shows it. Usage, temperature, power, clocks, how full something is, and incoming / outgoing data each have their own gradient from the theme.
@@ -128,6 +128,7 @@ disk_filter = []               # e.g. ["C:", "!D:"]
 memory_sort_ram = false        # rank memory by RAM instead of commit
 io_sort = "total"              # read, write, total
 proc_per_core = false          # 100% = one logical core
+proc_history_min = 15          # minutes of per-process history; 0 = only open windows
 ```
 
 ### Notes on the data
