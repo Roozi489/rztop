@@ -99,10 +99,10 @@ impl ThemeEditor {
             ("Meter off", &mut c.meter_bg),
             ("Selection", &mut c.selected_bg),
             ("Highlight", &mut c.hi_fg),
-            ("Status bar", &mut c.statusbar_bg),
-            ("Status text", &mut c.statusbar_fg),
-            ("Status keys", &mut c.statusbar_hi),
-            ("Brackets", &mut c.statusbar_sep),
+            ("Title bar", &mut c.statusbar_bg),
+            ("Title text", &mut c.statusbar_fg),
+            ("Title accent", &mut c.statusbar_hi),
+            ("Title labels", &mut c.statusbar_sep),
         ];
         egui::Grid::new("theme-base")
             .num_columns(6)

@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-08: the status bar settings are unused by the desktop app.
 // Modified for rztop on 2026-11-03: permission status, I/O ranking and pagefile clarity.
 // Modified for rztop on 2026-11-02: monitoring, layout and interaction enhancements.
 //! Per-subsystem persisted configuration sections.
@@ -160,9 +161,8 @@ impl Default for CpuConfig {
 /// participating in the runtime widget filter); the remaining
 /// `statusbar_show_*` bools choose which items the bar renders
 /// (left section: menu / preset / update interval; right section:
-/// uptime / clock). `statusbar_clock_format` is the format string
-/// passed to `tools::format_clock` for the right-section clock —
-/// empty hides the clock entirely.
+/// uptime / clock). None of these are used by the desktop app, which has no clock;
+/// they are kept so an rtop config still loads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StatusbarConfig {

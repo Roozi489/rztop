@@ -28,7 +28,6 @@ pub const SETTINGS_KEYS: &[&str] = &[
     "color_theme",
     "temp_scale",
     "base_10_sizes",
-    "statusbar_clock_format",
     "update_ms",
     "cpu_clock_max_mhz",
     "gpu_clock_max_mhz",

@@ -36,9 +36,10 @@ began on 2026-11-02; modified files are marked with a `Modified for rztop` heade
 ¹ Needs [PawnIO](#cpu-temperature-and-power) and administrator rights.
 
 - **Dockable layout**: drag a panel's caption onto another panel to split it or group the two as tabs; drag separators to resize.
-- **Layout controls** in the status bar: **save** stores the current arrangement and window position, **load** restores it, **reset** returns to the default arrangement sized to fit the window.
-- **Status bar**: settings, refresh interval (click `-` / `+`), rztop's own CPU usage, uptime, clock, and a warning when rztop is not elevated and some data is unavailable.
-- **Settings window** (`[settings]` in the status bar): theme, units and clock; refresh interval and meter scales; network adapter and graph scaling; disk filter; log level. Changes apply immediately and are saved to `rztop.toml`.
+- **Title bar** in the theme's colours, replacing the system one to save a row: rztop's own CPU usage and the uptime, then icons for elevation, layout and settings. Drag it to move the window, double-click it to maximize, and resize from any edge.
+- **Layout menu** (the layout icon): **Save layout** stores the current arrangement and window position, **Load saved layout** restores it, **Reset layout** returns to the default arrangement sized to fit the window.
+- **Run as administrator** (the shield icon, shown when rztop is not elevated): restarts rztop elevated. It turns to the warning colour when some data is unavailable without elevation.
+- **Settings window** (the gear icon): theme and units; refresh interval and meter scales; network adapter and graph scaling; disk filter; log level. Changes apply immediately and are saved to `rztop.toml`.
 - **48 bundled themes**, picked from thumbnails that show each theme's colours. The default is Gruvbox Material on a near-black background; most of the others come from rtop.
 - **Theme editor**: customize a theme's base colours and the start, middle and end of each colour role while the whole app previews it. Saved themes go to `%APPDATA%\rztop\themes\` in rtop's theme format, so rtop can load them too.
 - **Consistent colours**: a metric is coloured by what it measures, whichever panel shows it. Usage, temperature, power, clocks, how full something is, and incoming / outgoing data each have their own gradient from the theme.
@@ -88,7 +89,7 @@ If a vendor's driver is not installed, that backend is skipped.
 
 The Settings window edits the config file. Saving rewrites only the lines of the
 keys listed below, so other keys and comments stay. A comment on the same line
-as one of those keys is dropped. The `-` / `+` refresh buttons are saved too.
+as one of those keys is dropped.
 
 | What | Where |
 |------|-------|
@@ -105,7 +106,6 @@ color_theme = "default"        # any bundled or saved theme, e.g. "dracula", "ro
 update_ms = 2000               # refresh interval, 100..86400000
 base_10_sizes = false
 temp_scale = "celsius"         # celsius, fahrenheit, kelvin, rankine
-statusbar_clock_format = "%T"  # %T %R %H %I %M %S %p; "" hides the clock
 log_level = "warn"             # off, error, warn, info, debug, trace
 
 # Meter scales; 0 means automatic

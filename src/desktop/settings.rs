@@ -264,26 +264,6 @@ impl Settings {
                     .changed();
             });
             ui.end_row();
-
-            label(ui, look, "Clock");
-            ui.horizontal(|ui| {
-                ch.look |= ui
-                    .add(
-                        egui::TextEdit::singleline(&mut config.statusbar.statusbar_clock_format)
-                            .desired_width(120.0)
-                            .font(egui::TextStyle::Monospace),
-                    )
-                    .changed();
-                let shown = crate::tools::format_clock(&config.statusbar.statusbar_clock_format);
-                let preview = if shown.is_empty() {
-                    "hidden".to_owned()
-                } else {
-                    shown
-                };
-                ui.label(text(preview, look.fg));
-            });
-            ui.end_row();
-            hint_row(ui, look, "%T %R %H %I %M %S %p; empty hides the clock");
         });
     }
 

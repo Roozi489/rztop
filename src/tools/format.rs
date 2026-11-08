@@ -1,3 +1,4 @@
+// Modified for rztop on 2026-11-08: removed the status bar clock formatter.
 /// Format a byte value into a human-readable string (B, KiB, MiB, GiB, TiB).
 /// If `shorten` is true, values are shortened (e.g. "1.2G" instead of "1.23 GiB").
 /// If `bit` is true, uses bit units (b, Kib, Mib, ...).
@@ -112,63 +113,6 @@ pub fn celsius_to(celsius: i64, scale: crate::domain::config_enums::TempScale) -
         TempScale::Rankine => (((celsius * 9 / 5) + 32) + 460, "°R".to_string()),
         TempScale::Celsius => (celsius, "°C".to_string()),
     }
-}
-
-/// Format the current time using a clock format string.
-///
-/// Supported specifiers:
-///   `%T`  — `HH:MM:SS` (8 cells)
-///   `%R`  — `HH:MM` (5 cells)
-///   `%H`  — hour, 24-hour (`00`-`23`)
-///   `%I`  — hour, 12-hour (`01`-`12`)
-///   `%M`  — minute (`00`-`59`)
-///   `%S`  — second (`00`-`59`)
-///   `%p`  — `AM` / `PM`
-///
-/// Returns empty string for empty format.
-///
-/// rtop does not honour the user's locale — every output is
-/// fixed-form. POSIX `%X` ("the locale's preferred time format")
-/// is therefore not exposed; `%T` is the locale-independent
-/// alternative and matches what rtop actually produces.
-pub fn format_clock(format: &str) -> String {
-    if format.is_empty() {
-        return String::new();
-    }
-    // SAFETY: GetLocalTime takes no arguments, returns a SYSTEMTIME
-    // struct with the current local time, and has no failure modes.
-    let st = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
-    expand_clock_format(format, st.wHour, st.wMinute, st.wSecond)
-}
-
-/// Expand a clock format string by substituting the supported
-/// specifiers with the supplied time fields.
-///
-/// Multi-character aliases (`%T`, `%R`) expand first because
-/// they introduce single-character specifiers (`%H`/`%M`/`%S`)
-/// that the next stage substitutes. Unknown `%`-sequences (e.g.
-/// `%Z`) are left as literal text.
-fn expand_clock_format(format: &str, hour: u16, minute: u16, second: u16) -> String {
-    // 12-hour clock derived from the 24-hour value:
-    //   00 -> 12 AM   01..11 -> 1..11 AM
-    //   12 -> 12 PM   13..23 -> 1..11 PM
-    let hour12 = if hour == 0 {
-        12
-    } else if hour > 12 {
-        hour - 12
-    } else {
-        hour
-    };
-    let am_pm = if hour < 12 { "AM" } else { "PM" };
-
-    format
-        .replace("%T", "%H:%M:%S")
-        .replace("%R", "%H:%M")
-        .replace("%H", &format!("{hour:02}"))
-        .replace("%M", &format!("{minute:02}"))
-        .replace("%S", &format!("{second:02}"))
-        .replace("%I", &format!("{hour12:02}"))
-        .replace("%p", am_pm)
 }
 
 /// Read the system uptime in seconds since boot via the Win32
@@ -362,23 +306,5 @@ mod tests {
     fn strf_time_uptime_replacement() {
         let result = strf_time("/uptime", 3661);
         assert!(result.contains("01:01"), "got: {result}");
-    }
-
-    #[test]
-    fn expand_clock_format_twelve_hour_boundaries() {
-        // Pin the 24-hour → 12-hour mapping at every boundary so
-        // a future edit to the conditional cannot drift silently.
-        assert_eq!(expand_clock_format("%I %p", 0, 0, 0), "12 AM");
-        assert_eq!(expand_clock_format("%I %p", 1, 0, 0), "01 AM");
-        assert_eq!(expand_clock_format("%I %p", 11, 0, 0), "11 AM");
-        assert_eq!(expand_clock_format("%I %p", 12, 0, 0), "12 PM");
-        assert_eq!(expand_clock_format("%I %p", 13, 0, 0), "01 PM");
-        assert_eq!(expand_clock_format("%I %p", 23, 0, 0), "11 PM");
-    }
-
-    #[test]
-    fn expand_clock_format_aliases_resolve_to_full_time() {
-        assert_eq!(expand_clock_format("%T", 9, 30, 45), "09:30:45");
-        assert_eq!(expand_clock_format("%R", 9, 30, 45), "09:30");
     }
 }

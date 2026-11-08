@@ -42,6 +42,7 @@ use std::{
 mod settings;
 mod theme_editor;
 mod theme_picker;
+mod title_bar;
 
 /// Bumped whenever panels are added, so an older saved arrangement
 /// cannot hide the new panels.
@@ -281,7 +282,6 @@ struct Look {
     /// Fixed graph scales used when network auto-scaling is off.
     net_download: i64,
     net_upload: i64,
-    clock_format: String,
 }
 
 impl Look {
@@ -328,7 +328,6 @@ impl Look {
             statusbar_sep: rgb(c.statusbar_sep),
             net_download: config.net.net_download,
             net_upload: config.net.net_upload,
-            clock_format: config.statusbar.statusbar_clock_format.clone(),
         }
     }
 
@@ -423,7 +422,7 @@ fn spawn_worker<S, T: Send + Sync + 'static>(
 struct Monitor {
     latest: LatestSlot<Sample>,
     status: LatestSlot<StatusbarInfo>,
-    /// Shared refresh interval in milliseconds, changed from the statusbar.
+    /// Shared refresh interval in milliseconds, changed from Settings.
     interval: Arc<AtomicU64>,
     stops: Vec<mpsc::Sender<()>>,
     workers: Vec<JoinHandle<()>>,
@@ -518,35 +517,6 @@ fn windows_units(value: String) -> String {
     value.replace("iB", "B").replace(' ', "")
 }
 
-/// One `[body]` statusbar item drawn as a single label, so a right-to-left
-/// layout cannot reorder its brackets. Leaves a gap after the previous item.
-fn status_item(
-    ui: &mut Ui,
-    look: &Look,
-    body: &str,
-    color: Color32,
-    sense: Sense,
-) -> egui::Response {
-    let mut job = egui::text::LayoutJob::default();
-    for (part, color) in [
-        ("[", look.statusbar_sep),
-        (body, color),
-        ("]", look.statusbar_sep),
-    ] {
-        job.append(
-            part,
-            0.0,
-            egui::TextFormat {
-                font_id: mono(),
-                color,
-                ..Default::default()
-            },
-        );
-    }
-    ui.add_space(6.0);
-    ui.add(egui::Label::new(job).selectable(false).sense(sense))
-}
-
 /// Start this executable again through the UAC prompt ("runas"). Returns
 /// false when the user declines or the launch fails.
 fn relaunch_as_admin() -> bool {
@@ -566,17 +536,6 @@ fn relaunch_as_admin() -> bool {
         unsafe { ShellExecuteW(None, w!("runas"), &exe, PCWSTR::null(), &dir, SW_SHOWNORMAL) };
     // ShellExecuteW signals success with a value greater than 32.
     result.0 as usize > 32
-}
-
-/// Same steps and bounds as the terminal's `-` / `+` refresh keys.
-fn step_interval(ms: u64, up: bool) -> u64 {
-    let step = if ms > 2000 { 1000 } else { 100 };
-    let next = if up {
-        ms.saturating_add(step)
-    } else {
-        ms.saturating_sub(step)
-    };
-    next.clamp(100, 86_400_000)
 }
 
 /// Selected network adapter and the graph scaling toggles.
@@ -611,6 +570,8 @@ struct Desktop {
     config_dirty: bool,
     /// Outcome of the last write to `rztop.toml`, shown in Settings.
     config_saved: Option<Result<(), String>>,
+    /// The title bar's copy of the app icon, redrawn when the theme changes.
+    title_icon: Option<egui::TextureHandle>,
 }
 
 /// A layout the user chose to keep, with the window's position and size, so
@@ -645,145 +606,71 @@ impl Desktop {
         }
     }
 
-    /// `[layout save load reset] [- 1000ms +] … [not admin] [rztop CPU] [up] [clock]`.
-    fn status_bar(&mut self, ui: &mut Ui, sample: Option<&Sample>, status: Option<&StatusbarInfo>) {
+    /// The title bar, and whatever its buttons asked for.
+    fn title_bar(&mut self, ui: &mut Ui, sample: Option<&Sample>, status: Option<&StatusbarInfo>) {
         let look = &self.look;
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let chip = |ui: &mut Ui, parts: &[(&str, Color32, bool)]| -> Option<usize> {
-            let mut clicked = None;
-            ui.label(text("[", look.statusbar_sep));
-            for (i, (part, color, clickable)) in parts.iter().enumerate() {
-                let label = egui::Label::new(text(*part, *color)).selectable(false);
-                if *clickable {
-                    let response = ui
-                        .add(label.sense(Sense::click()))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
-                    if response.clicked() {
-                        clicked = Some(i);
-                    }
-                } else {
-                    ui.add(label);
-                }
-            }
-            ui.label(text("]", look.statusbar_sep));
-            ui.add_space(6.0);
-            clicked
-        };
-        let mut layout_action = None;
-        let mut open_settings = false;
-        let mut elevate = false;
-        let mut step = None;
-        let has_saved = self.saved.is_some();
-        ui.horizontal(|ui| {
-            open_settings = chip(ui, &[("settings", look.statusbar_hi, true)]).is_some();
-            // `[layout save load reset]`; load is dimmed until something is saved.
-            let load = if has_saved {
-                look.statusbar_hi
-            } else {
-                look.dim
-            };
-            layout_action = chip(
-                ui,
-                &[
-                    ("layout ", look.statusbar_fg, false),
-                    ("save", look.statusbar_hi, true),
-                    (" ", look.statusbar_fg, false),
-                    ("load", load, has_saved),
-                    (" ", look.statusbar_fg, false),
-                    ("reset", look.statusbar_hi, true),
-                ],
-            );
-            let ms = self.monitor.interval.load(Relaxed);
-            let rate = format!(" {ms}ms ");
-            step = chip(
-                ui,
-                &[
-                    ("-", look.statusbar_hi, true),
-                    (&rate, look.statusbar_fg, false),
-                    ("+", look.statusbar_hi, true),
-                ],
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Right-to-left: the first item drawn is the rightmost. Each item is
-                // one label so the layout direction cannot reorder its brackets.
-                let item = |ui: &mut Ui, body: &str| {
-                    status_item(ui, look, body, look.statusbar_fg, Sense::hover());
-                };
-                let clock = crate::tools::format_clock(&look.clock_format);
-                if !clock.is_empty() {
-                    item(ui, &clock);
-                }
-                if let Some(status) = status {
-                    item(ui, &crate::tools::uptime_label(status.uptime_seconds));
-                }
-                let own = sample.and_then(|s| {
-                    let me = s.procs.iter().find(|p| p.pid == std::process::id())?;
-                    let pct = crate::domain::process::display_cpu_percent(
-                        me.cpu_p,
-                        s.cpu.core_count,
-                        look.per_core,
-                    );
-                    Some(format!("{pct:.1}%"))
-                });
-                let own = format!("rztop CPU {}", own.as_deref().unwrap_or("N/A"));
-                item(ui, &own);
-                // The relaunch button sits right after the notice it resolves.
-                if crate::collect::permissions::is_elevated() == Some(false) {
-                    elevate =
-                        status_item(ui, look, "run as admin", look.statusbar_hi, Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked();
-                }
-                if status.is_some_and(|s| s.admin_limited) {
-                    ui.add_space(6.0);
-                    ui.label(text("not admin: limited data", look.warn));
-                }
-            });
+        let icon = self.title_icon.get_or_insert_with(|| {
+            let size = 32;
+            let image =
+                egui::ColorImage::from_rgba_unmultiplied([size, size], &icon_rgba(look, size));
+            ui.ctx()
+                .load_texture("title-icon", image, egui::TextureOptions::LINEAR)
         });
+        let own_cpu = sample.and_then(|s| {
+            let me = s.procs.iter().find(|p| p.pid == std::process::id())?;
+            let pct = crate::domain::process::display_cpu_percent(
+                me.cpu_p,
+                s.cpu.core_count,
+                look.per_core,
+            );
+            Some(format!("{pct:.1}%"))
+        });
+        let state = title_bar::State {
+            icon,
+            own_cpu,
+            uptime: status.map(|s| {
+                crate::tools::uptime_label(s.uptime_seconds)
+                    .trim_start_matches("up ")
+                    .to_owned()
+            }),
+            not_admin: crate::collect::permissions::is_elevated() == Some(false),
+            admin_limited: status.is_some_and(|s| s.admin_limited),
+            has_saved_layout: self.saved.is_some(),
+        };
+        let actions = title_bar::show(ui, look, &state);
         let ctx = ui.ctx().clone();
-        if open_settings {
+        if actions.settings {
             self.settings.toggle();
         }
-        match layout_action {
-            Some(1) => {
-                let (outer, inner) =
-                    ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect));
-                self.saved = Some(SavedLayout {
-                    dock: self.dock.clone(),
-                    position: outer.map(|r| [r.min.x, r.min.y]),
-                    size: inner.map(|r| [r.width(), r.height()]),
-                });
-                self.store_saved = true;
-                ctx.request_repaint();
+        if actions.layout_save {
+            let (outer, inner) = ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect));
+            self.saved = Some(SavedLayout {
+                dock: self.dock.clone(),
+                position: outer.map(|r| [r.min.x, r.min.y]),
+                size: inner.map(|r| [r.width(), r.height()]),
+            });
+            self.store_saved = true;
+            ctx.request_repaint();
+        }
+        if actions.layout_load
+            && let Some(saved) = &self.saved
+        {
+            self.dock = saved.dock.clone();
+            if let Some([x, y]) = saved.position {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos2(x, y)));
             }
-            Some(3) => {
-                if let Some(saved) = &self.saved {
-                    self.dock = saved.dock.clone();
-                    if let Some([x, y]) = saved.position {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos2(x, y)));
-                    }
-                    if let Some([w, h]) = saved.size {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(w, h)));
-                    }
-                }
+            if let Some([w, h]) = saved.size {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(w, h)));
             }
-            Some(5) => {
-                self.dock = initial_layout();
-                self.fitting = FIT_FRAMES;
-            }
-            _ => {}
+        }
+        if actions.layout_reset {
+            self.dock = initial_layout();
+            self.fitting = FIT_FRAMES;
         }
         // Closing saves the layout, so the elevated instance reopens it. If the
         // UAC prompt is declined this instance simply keeps running.
-        if elevate && relaunch_as_admin() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        if let Some(i) = step {
-            let ms = step_interval(self.monitor.interval.load(Relaxed), i == 2);
-            self.monitor.interval.store(ms, Relaxed);
-            // Kept like a Settings change, so the interval survives a restart.
-            self.config.refresh.update_ms = ms as i64;
-            self.config_dirty = true;
+        if actions.elevate && relaunch_as_admin() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -809,6 +696,7 @@ impl Desktop {
         }
         if changes.theme || changes.preview {
             apply_style(ctx, &self.look);
+            self.title_icon = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(app_icon(
                 &self.look,
             )))));
@@ -854,14 +742,15 @@ impl eframe::App for Desktop {
             self.dragged = None;
         }
         let status = self.monitor.status.latest();
-        egui::TopBottomPanel::bottom("status")
+        egui::TopBottomPanel::top("title")
+            .exact_height(title_bar::HEIGHT)
             .frame(
                 egui::Frame::NONE
                     .fill(self.look.statusbar_bg)
-                    .inner_margin(egui::Margin::symmetric(8, 3)),
+                    .inner_margin(egui::Margin::ZERO),
             )
             .show(ctx, |ui| {
-                self.status_bar(ui, sample.as_deref(), status.as_deref())
+                self.title_bar(ui, sample.as_deref(), status.as_deref())
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -885,11 +774,7 @@ impl eframe::App for Desktop {
             });
         let sample = self.monitor.latest.latest();
         self.settings_window(ctx, sample.as_deref());
-        // Keep the statusbar clock ticking on the second, between samples.
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_millis());
-        ctx.request_repaint_after(Duration::from_millis(u64::from(1000 - millis.min(999))));
+        title_bar::edges(ctx, &self.look);
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, LAYOUT, &self.dock);
@@ -2472,6 +2357,7 @@ pub fn run_desktop() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1150.0, 975.0])
             .with_min_inner_size([410.0, 320.0])
+            .with_decorations(false)
             .with_icon(app_icon(&look)),
         ..Default::default()
     };
@@ -2506,6 +2392,7 @@ pub fn run_desktop() -> eframe::Result {
                 settings: settings::Settings::default(),
                 config_dirty: false,
                 config_saved: None,
+                title_icon: None,
             }))
         }),
     )
@@ -2527,15 +2414,6 @@ mod tests {
         assert_eq!(grad.at(-5), Color32::from_rgb(0, 0, 0));
         assert_eq!(grad.at(50), Color32::from_rgb(100, 100, 100));
         assert_eq!(grad.at(250), Color32::from_rgb(200, 0, 0));
-    }
-
-    #[test]
-    fn refresh_steps_match_terminal_keys() {
-        assert_eq!(step_interval(1000, true), 1100);
-        assert_eq!(step_interval(2000, true), 2100);
-        assert_eq!(step_interval(2100, true), 3100);
-        assert_eq!(step_interval(3000, false), 2000);
-        assert_eq!(step_interval(100, false), 100);
     }
 
     #[test]

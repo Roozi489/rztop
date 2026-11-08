@@ -1,6 +1,6 @@
 //! Theme thumbnails for the Settings window: one per bundled theme, each
 //! drawn in that theme's own colours: its background and text, a meter
-//! strip for every colour role, and a miniature status bar.
+//! strip for every colour role, and a miniature title bar.
 
 use super::{Gradient, Look, segments};
 use crate::config::Config;
@@ -10,10 +10,11 @@ use eframe::egui::{
     vec2,
 };
 
-const THUMB: egui::Vec2 = vec2(232.0, 112.0);
+const THUMB: egui::Vec2 = vec2(232.0, 92.0);
 const PAD: f32 = 8.0;
 const STRIP_H: f32 = 7.0;
 const ROW_H: f32 = 12.0;
+const BAR_H: f32 = 18.0;
 
 /// Every theme's colours, built the first time the grid is shown and
 /// again after a user theme is saved or deleted.
@@ -81,26 +82,57 @@ fn thumbnail(ui: &mut Ui, name: &str, look: &Look, selected: bool) -> egui::Resp
     let small = FontId::monospace(10.0);
     painter.rect_filled(rect, CornerRadius::same(4), look.bg);
 
-    // Title row, like a panel caption; the user's own themes are tagged.
-    painter.text(
-        rect.left_top() + vec2(PAD, 5.0),
-        Align2::LEFT_TOP,
+    // Miniature title bar: the theme's name, the user's own themes tagged,
+    // and a `CPU 1.2%` readout in the bar's colours.
+    let bar = Rect::from_min_max(
+        rect.left_top(),
+        egui::pos2(rect.right(), rect.top() + BAR_H),
+    );
+    painter.rect_filled(
+        bar,
+        CornerRadius {
+            nw: 4,
+            ne: 4,
+            ..Default::default()
+        },
+        look.statusbar_bg,
+    );
+    let mut job = LayoutJob::default();
+    job.append(
         name,
-        FontId::monospace(11.5),
-        look.fg,
+        0.0,
+        TextFormat::simple(FontId::monospace(11.5), look.statusbar_fg),
     );
     if !crate::theme::is_bundled(name) {
-        painter.text(
-            rect.right_top() + vec2(-PAD, 6.0),
-            Align2::RIGHT_TOP,
-            "custom",
-            small.clone(),
-            look.label,
+        job.append(
+            " custom",
+            0.0,
+            TextFormat::simple(small.clone(), look.statusbar_sep),
         );
     }
+    let galley = painter.layout_job(job);
+    painter.galley(
+        egui::pos2(bar.left() + PAD, bar.center().y - galley.size().y / 2.0),
+        galley,
+        look.statusbar_fg,
+    );
+    let mut job = LayoutJob::default();
+    let parts: [(&str, Color32); 2] = [("CPU ", look.statusbar_sep), ("1.2%", look.statusbar_fg)];
+    for (text, color) in parts {
+        job.append(text, 0.0, TextFormat::simple(small.clone(), color));
+    }
+    let galley = painter.layout_job(job);
+    painter.galley(
+        egui::pos2(
+            bar.right() - PAD - galley.size().x,
+            bar.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        look.statusbar_fg,
+    );
 
     // Two columns of role strips.
-    let top = rect.top() + 22.0;
+    let top = bar.bottom() + 5.0;
     let col_w = (rect.width() - 3.0 * PAD) / 2.0;
     let label_w = 36.0;
     for (i, (label, grad)) in roles(look).into_iter().enumerate() {
@@ -120,43 +152,6 @@ fn thumbnail(ui: &mut Ui, name: &str, look: &Look, selected: bool) -> egui::Resp
         );
         segments(&painter, strip, 100, grad, look.meter_off);
     }
-
-    // Miniature status bar: `[layout save] [- 2000ms +]` in the theme's bar colours.
-    let bar = Rect::from_min_max(
-        egui::pos2(rect.left(), rect.bottom() - 18.0),
-        rect.right_bottom(),
-    );
-    painter.rect_filled(
-        bar,
-        CornerRadius {
-            sw: 4,
-            se: 4,
-            ..Default::default()
-        },
-        look.statusbar_bg,
-    );
-    let mut job = LayoutJob::default();
-    let parts: [(&str, Color32); 10] = [
-        ("[", look.statusbar_sep),
-        ("layout ", look.statusbar_fg),
-        ("save", look.statusbar_hi),
-        ("] ", look.statusbar_sep),
-        ("[", look.statusbar_sep),
-        ("-", look.statusbar_hi),
-        (" 2000ms ", look.statusbar_fg),
-        ("+", look.statusbar_hi),
-        ("] ", look.statusbar_sep),
-        ("warn", look.warn),
-    ];
-    for (text, color) in parts {
-        job.append(text, 0.0, TextFormat::simple(small.clone(), color));
-    }
-    let galley = painter.layout_job(job);
-    painter.galley(
-        egui::pos2(bar.left() + PAD, bar.center().y - galley.size().y / 2.0),
-        galley,
-        look.statusbar_fg,
-    );
 
     // Border: the theme's highlight when current, its text colour on hover.
     let stroke = if selected {
